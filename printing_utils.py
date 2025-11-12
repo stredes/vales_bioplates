@@ -5,7 +5,7 @@ import os
 import subprocess
 from tkinter import messagebox
 
-from config import WINDOWS_OS
+from config import WINDOWS_OS, SUMATRA_PDF_PATH
 
 
 def print_pdf_windows(filename: str, copies: int = 1) -> None:
@@ -63,11 +63,14 @@ def print_pdf_windows(filename: str, copies: int = 1) -> None:
                 break
 
         if last_err:
-            # 3) SumatraPDF (si existe)
-            sumatra_candidates = [
+            # 3) SumatraPDF (si existe o se definió vía config)
+            sumatra_candidates = []
+            if SUMATRA_PDF_PATH and os.path.exists(SUMATRA_PDF_PATH):
+                sumatra_candidates.append(SUMATRA_PDF_PATH)
+            sumatra_candidates.extend([
                 os.path.join(os.environ.get("ProgramFiles", r"C:\\Program Files"), "SumatraPDF", "SumatraPDF.exe"),
                 os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\\Program Files (x86)"), "SumatraPDF", "SumatraPDF.exe"),
-            ]
+            ])
             runner = next((p for p in sumatra_candidates if p and os.path.exists(p)), None)
             if runner:
                 try:
@@ -96,4 +99,3 @@ def print_pdf_windows(filename: str, copies: int = 1) -> None:
         )
     except Exception as e:
         messagebox.showerror("Error de Impresión", f"Fallo al enviar a la impresora: {e}")
-

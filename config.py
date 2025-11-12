@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 import os
@@ -24,4 +24,9 @@ try:
     WINDOWS_OS = True
 except Exception:
     WINDOWS_OS = False
+
+# Ruta opcional a SumatraPDF.exe para impresión silenciosa en Windows.
+# Puede configurarse mediante la variable de entorno 'SUMATRA_PDF_PATH'.
+SUMATRA_PDF_PATH = os.environ.get("SUMATRA_PDF_PATH")
+
 

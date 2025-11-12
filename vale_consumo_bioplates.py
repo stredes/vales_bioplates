@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 # Aplicación de Escritorio para Gestión de Vales de Consumo - Bioplates
@@ -14,6 +14,9 @@ import sys
 from config import INVENTORY_FILE, AREA_FILTER, HISTORY_DIR, WINDOWS_OS
 from data_loader import load_inventory
 from pdf_utils import build_vale_pdf
+from printing_utils import print_pdf_windows
+from filters import FilterOptions
+from vale_manager import ValeManager
 from settings_store import get_last_inventory_dir, set_last_inventory_dir
 
 class ValeConsumoApp:
@@ -23,16 +26,16 @@ class ValeConsumoApp:
         master.geometry("1200x700")
 
         # Variables de estado
+        self.manager = ValeManager()
         self.inventory_df = pd.DataFrame()
         self.bioplates_inventory = pd.DataFrame()
-        self.current_vale = [] # Lista de diccionarios para el vale: [{'Producto': '...', 'Lote': '...', 'Vencimiento': '...', 'Cantidad': x, 'Stock_Original': y}, ...]
+        self.current_vale = self.manager.current_vale  # referencia
         self.inventory_file = INVENTORY_FILE  # Archivo de inventario seleccionado
 
         # Configuración de la interfaz
         self.setup_ui()
 
-        # Carga inicial de datos (no fatal si falla; permite seleccionar archivo luego)
-        self.load_inventory_data(fatal=False)
+        # Carga inicial de datos deshabilitada: el usuario selecciona el archivo manualmente
 
         # Crear directorio de historial si no existe
         if not os.path.exists(HISTORY_DIR):
@@ -45,17 +48,23 @@ class ValeConsumoApp:
                 self.inventory_file = filepath
             file_to_read = self.inventory_file
 
-            # Cargar inventario normalizado
-            self.bioplates_inventory = load_inventory(file_to_read, AREA_FILTER)
+            # Cargar inventario con el manager
+            self.bioplates_inventory = self.manager.load(file_to_read, AREA_FILTER)
+            # Refrescar opciones de subfamilia en filtros
+            self._refresh_subfamilia_filter_options()
 
-            self.update_product_treeview()
+            # Refrescar grilla respetando filtros vigentes
+            try:
+                self._apply_filters_and_refresh()
+            except Exception:
+                self.update_product_treeview()
             messagebox.showinfo("Carga Exitosa", f"Inventario cargado y filtrado. {len(self.bioplates_inventory)} productos de Bioplates disponibles.")
             if hasattr(self, 'file_label'):
                 try:
                     shown = os.path.basename(self.inventory_file)
                 except Exception:
                     shown = str(self.inventory_file)
-                self.file_label.configure(text=f"Archivo: {shown}")
+                self.file_label.configure(text=f"Recordar solicitar archivo actualizado")
 
         except FileNotFoundError:
             messagebox.showerror("Error de Archivo", f"El archivo de inventario '{self.inventory_file}' no se encontro.")
@@ -81,7 +90,7 @@ class ValeConsumoApp:
             initial_shown = os.path.basename(self.inventory_file)
         except Exception:
             initial_shown = str(self.inventory_file)
-        self.file_label = ttk.Label(self.file_frame, text=f"Archivo: {initial_shown}")
+        self.file_label = ttk.Label(self.file_frame, text=f"Recordar solicitar archivo actualizado | Archivo: {initial_shown}")
         self.file_label.pack(side="left")
 
         # Marco superior: Productos disponibles
@@ -92,8 +101,14 @@ class ValeConsumoApp:
         self.vale_frame = ttk.LabelFrame(self.main_frame, text="Vale de Consumo en Curso", padding="10")
         self.vale_frame.pack(side="bottom", fill="x", padx=5, pady=5)
 
-        # --- Productos Disponibles (Treeview) ---
-        self.product_tree = ttk.Treeview(self.products_frame, columns=('Producto', 'Lote', 'Ubicacion', 'Vencimiento', 'Stock'), show='headings')
+        # --- Productos Disponibles (Treeview plano + filtro de Subfamilia a la derecha) ---
+        self.product_tree = ttk.Treeview(
+            self.products_frame,
+            columns=('Producto', 'Lote', 'Ubicacion', 'Vencimiento', 'Stock'),
+            show='headings',
+            selectmode='browse'
+        )
+
         self.product_tree.heading('Producto', text='Nombre del Producto')
         self.product_tree.heading('Lote', text='Lote')
         self.product_tree.heading('Ubicacion', text='Ubicacion')
@@ -133,6 +148,12 @@ class ValeConsumoApp:
         
         ttk.Button(self.control_frame, text="Limpiar Búsqueda", command=lambda: self.search_var.set("")).pack(pady=5)
         # Filtros integrados
+        ttk.Label(self.control_frame, text='Subfamilia:').pack(pady=3, padx=10)
+        self.subfam_var = tk.StringVar()
+        self.subfam_combo = ttk.Combobox(self.control_frame, textvariable=self.subfam_var, state='readonly')
+        self.subfam_combo.pack(pady=3, padx=10)
+        self.subfam_var.trace_add('write', lambda *args: self.filter_products())
+
         ttk.Label(self.control_frame, text='Lote:').pack(pady=3, padx=10)
         self.lote_var = tk.StringVar()
         ttk.Entry(self.control_frame, textvariable=self.lote_var).pack(pady=3, padx=10)
@@ -199,7 +220,7 @@ class ValeConsumoApp:
         except Exception:
             shown = str(selected)
         if hasattr(self, 'file_label'):
-            self.file_label.configure(text=f"Archivo: {shown}")
+            self.file_label.configure(text=f"Recordar solicitar archivo actualizado | Archivo: {shown}")
         # Guardar la ubicación del inventario seleccionado
         try:
             dirpath = os.path.dirname(selected)
@@ -217,8 +238,51 @@ class ValeConsumoApp:
         if hasattr(self, 'ubi_var'): self.ubi_var.set('')
         if hasattr(self, 'vdesde_var'): self.vdesde_var.set('')
         if hasattr(self, 'vhasta_var'): self.vhasta_var.set('')
+        if hasattr(self, 'subfam_var'): self.subfam_var.set('(Todas)')
         if hasattr(self, 'stock_only_var'): self.stock_only_var.set(False)
-        self.update_product_treeview(self.bioplates_inventory)
+        try:
+            self._apply_filters_and_refresh()
+        except Exception:
+            self.update_product_treeview(self.bioplates_inventory)
+
+    def _refresh_subfamilia_filter_options(self):
+        """Refresca la lista de subfamilias en el combobox de filtros."""
+        if not hasattr(self, 'subfam_combo'):
+            return
+        try:
+            if 'Subfamilia' in self.bioplates_inventory.columns:
+                vals = (
+                    self.bioplates_inventory['Subfamilia']
+                    .astype(str)
+                    .replace({'nan': '', 'None': ''})
+                    .dropna()
+                    .unique()
+                )
+                options = sorted([v for v in vals if v and v.strip()])
+            else:
+                options = []
+        except Exception:
+            options = []
+        self.subfam_combo['values'] = ['(Todas)'] + options
+        # Set default
+        self.subfam_var.set('(Todas)')
+
+    def _get_filter_options(self):
+        """Construye FilterOptions a partir del estado de la UI."""
+        return FilterOptions(
+            producto=(self.search_var.get() if hasattr(self, 'search_var') else ''),
+            lote=(self.lote_var.get() if hasattr(self, 'lote_var') else ''),
+            ubicacion=(self.ubi_var.get() if hasattr(self, 'ubi_var') else ''),
+            venc_desde=(self.vdesde_var.get() if hasattr(self, 'vdesde_var') else ''),
+            venc_hasta=(self.vhasta_var.get() if hasattr(self, 'vhasta_var') else ''),
+            subfamilia=(self.subfam_var.get() if hasattr(self, 'subfam_var') else '(Todas)'),
+            solo_con_stock=(self.stock_only_var.get() if hasattr(self, 'stock_only_var') else False),
+        )
+
+    def _apply_filters_and_refresh(self):
+        opts = self._get_filter_options()
+        filtered = opts.apply(self.bioplates_inventory.copy())
+        self.update_product_treeview(filtered)
 
 
 
@@ -230,64 +294,18 @@ class ValeConsumoApp:
             self.product_tree.delete(item)
         
         df_to_show = filtered_df if filtered_df is not None else self.bioplates_inventory
-        
-        # Insertar nuevos datos
+
+        # Insertar directamente las filas
         for index, row in df_to_show.iterrows():
-            self.product_tree.insert('', 'end', values=(row['Nombre_del_Producto'], row['Lote'], row.get('Ubicacion', ''), row['Vencimiento'], row['Stock']), iid=index)
+            self.product_tree.insert(
+                '', 'end',
+                values=(row['Nombre_del_Producto'], row['Lote'], row.get('Ubicacion', ''), row['Vencimiento'], row['Stock']),
+                iid=index
+            )
 
     def filter_products(self):
         """Filtra los productos disponibles segun los filtros integrados."""
-        df = self.bioplates_inventory.copy()
-
-        # Texto de producto
-        term = self.search_var.get().strip().lower() if hasattr(self, 'search_var') else ''
-        if term:
-            mask_p = df['Nombre_del_Producto'].str.lower().str.contains(term, na=False)
-            df = df[mask_p]
-
-        # Lote
-        lote_t = self.lote_var.get().strip().lower() if hasattr(self, 'lote_var') else ''
-        if lote_t:
-            mask_l = df['Lote'].str.lower().str.contains(lote_t, na=False)
-            df = df[mask_l]
-
-        # Ubicacion
-        ubi_t = self.ubi_var.get().strip().lower() if hasattr(self, 'ubi_var') else ''
-        if ubi_t and 'Ubicacion' in df.columns:
-            mask_u = df['Ubicacion'].astype(str).str.lower().str.contains(ubi_t, na=False)
-            df = df[mask_u]
-
-        # Vencimiento rango
-        from datetime import datetime
-        vdesde = self.vdesde_var.get().strip() if hasattr(self, 'vdesde_var') else ''
-        vhasta = self.vhasta_var.get().strip() if hasattr(self, 'vhasta_var') else ''
-        def _parse(d):
-            try:
-                return datetime.strptime(d, '%Y-%m-%d')
-            except Exception:
-                return None
-        d1 = _parse(vdesde) if vdesde else None
-        d2 = _parse(vhasta) if vhasta else None
-        if d1 or d2:
-            # Vencimiento esta en formato YYYY-MM-DD
-            vdt = df['Vencimiento'].astype(str)
-            vdt = vdt.where(vdt.ne('NaT'), None)
-            def _ok(s):
-                try:
-                    t = datetime.strptime(s, '%Y-%m-%d')
-                except Exception:
-                    return False
-                if d1 and t < d1: return False
-                if d2 and t > d2: return False
-                return True
-            df = df[vdt.apply(_ok)]
-
-        # Stock
-        if hasattr(self, 'stock_only_var') and self.stock_only_var.get():
-            if 'Stock' in df.columns:
-                df = df[df['Stock'] > 0]
-
-        self.update_product_treeview(df)
+        self._apply_filters_and_refresh()
 
 
     # --- Lógica de Gestión de Vale y Validaciones ---
@@ -296,6 +314,14 @@ class ValeConsumoApp:
         selected_item = self.product_tree.focus()
         if not selected_item:
             messagebox.showwarning("Advertencia", "Debe seleccionar un producto de la lista de disponibles.")
+            return
+        # Evitar seleccionar cabeceras de Subfamilia
+        try:
+            _vals = self.product_tree.item(selected_item, 'values')
+        except Exception:
+            _vals = None
+        if not _vals or len(_vals) == 0:
+            messagebox.showwarning("Advertencia", "Seleccione un producto dentro de una Subfamilia, no la cabecera.")
             return
 
         try:
@@ -322,8 +348,11 @@ class ValeConsumoApp:
         # Actualizar el stock en el DataFrame en memoria
         self.bioplates_inventory.loc[item_index, 'Stock'] -= quantity_to_remove
         
-        # Actualizar la tabla de productos disponibles
-        self.update_product_treeview()
+        # Actualizar la tabla de productos disponibles respetando filtros
+        try:
+            self._apply_filters_and_refresh()
+        except Exception:
+            self.update_product_treeview()
 
         # Preparar el ítem para el vale
         new_item = {
@@ -363,18 +392,21 @@ class ValeConsumoApp:
             
         # El iid en vale_tree es el índice de la lista self.current_vale
         item_index = self.vale_tree.index(selected_item)
-        item_to_remove = self.current_vale.pop(item_index)
+        try:
+            removed = self.manager.remove_from_vale(item_index)
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo eliminar del vale: {e}")
+            return
 
-        # Revertir el stock
-        stock_index = item_to_remove['Stock_Original_Index']
-        quantity_reverted = item_to_remove['Cantidad']
-        
-        self.bioplates_inventory.loc[stock_index, 'Stock'] += quantity_reverted
-        
-        self.update_product_treeview()
+        self.bioplates_inventory = self.manager.bioplates_inventory
+        self.current_vale = self.manager.current_vale
+        try:
+            self._apply_filters_and_refresh()
+        except Exception:
+            self.update_product_treeview()
         self.update_vale_treeview()
         
-        messagebox.showinfo("Producto Eliminado", f"Se ha revertido el stock de {quantity_reverted} unidades de '{item_to_remove['Producto']}'.")
+        messagebox.showinfo("Producto Eliminado", f"Se ha revertido el stock de {removed['Cantidad']} unidades de '{removed['Producto']}'.")
 
     def clear_vale(self):
         """Limpia el vale en curso y revierte todo el stock."""
@@ -391,7 +423,10 @@ class ValeConsumoApp:
             self.bioplates_inventory.loc[stock_index, 'Stock'] += quantity_reverted
 
         self.current_vale = []
-        self.update_product_treeview()
+        try:
+            self._apply_filters_and_refresh()
+        except Exception:
+            self.update_product_treeview()
         self.update_vale_treeview()
         messagebox.showinfo("Vale Limpiado", "El vale ha sido limpiado y el stock revertido.")
 
@@ -416,14 +451,28 @@ class ValeConsumoApp:
         filename = os.path.join(HISTORY_DIR, f"Vale_Consumo_Bioplates_{timestamp}.pdf")
 
         try:
+            # Generar PDF
             build_vale_pdf(filename, self.current_vale, now)
-            # Abrir en navegador predeterminado
+
+            # Intentar impresión automática en Windows
+            printed = False
+            if WINDOWS_OS:
+                try:
+                    print_pdf_windows(filename, copies=1)
+                    printed = True
+                except Exception:
+                    printed = False
+
+            # Abrir en navegador para vista previa/impresión manual
             import webbrowser
             from pathlib import Path
             url = Path(filename).resolve().as_uri()
             webbrowser.open(url)
-            messagebox.showinfo("Vale Generado", "Vale generado y abierto en el navegador para impresion.")
-            # Limpiar el vale después de la generación/impresión
+            if printed:
+                messagebox.showinfo("Vale Generado", "Vale generado y enviado a la impresora. También se abrió para vista previa.")
+            else:
+                messagebox.showinfo("Vale Generado", "Vale generado y abierto en el navegador para impresión.")
+            # Limpiar el vale
             self.current_vale = []
             self.update_vale_treeview()
 
@@ -446,3 +495,5 @@ def run_app() -> None:
 
 if __name__ == "__main__":
     run_app()
+
+
