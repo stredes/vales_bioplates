@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ def _para(text: str, style_name: str = "Normal") -> Paragraph:
 
 
 def _auto_col_widths(rows: List[List[str]], page_width: int, padd: int = 16) -> List[int]:
-    # Calcula anchos según el contenido + padding, y ajusta al ancho disponible
+    # Calcula anchos segÃºn el contenido + padding, y ajusta al ancho disponible
     # Fuente asumida: Helvetica 10
     font_name = "Helvetica"
     font_size = 10
@@ -63,12 +63,12 @@ def build_vale_pdf(filename: str, vale_data: List[Dict], emission_time: datetime
     elements = []
 
     title_style = ParagraphStyle("TitleStyle", parent=styles["Title"], fontSize=16, alignment=1)
-    elements.append(Paragraph("<b>VALE DE CONSUMO – BIOPLATES</b>", title_style))
+    elements.append(Paragraph("<b>VALE DE CONSUMO - BIOPLATES</b>", title_style))
     elements.append(Spacer(1, 12))
 
     metadata = [
-        ["Fecha de Emisión:", emission_time.strftime("%d-%m-%Y")],
-        ["Hora de Emisión:", emission_time.strftime("%H:%M:%S")],
+        ["Fecha de Emision:", emission_time.strftime("%d-%m-%Y")],
+        ["Hora de Emision:", emission_time.strftime("%H:%M:%S")],
     ]
 
     metadata_table = Table(metadata, colWidths=[150, 300])
@@ -86,7 +86,7 @@ def build_vale_pdf(filename: str, vale_data: List[Dict], emission_time: datetime
     elements.append(Spacer(1, 18))
 
     # Datos de tabla: Producto, Lote, Ubicacion, Vencimiento, Cantidad
-    headers = ["Producto", "Lote", "Ubicación", "Vencimiento", "Cantidad"]
+    headers = ["Producto", "Lote", "Ubicacion", "Vencimiento", "Cantidad"]
     rows = [headers]
     for item in vale_data:
         rows.append(
@@ -99,11 +99,11 @@ def build_vale_pdf(filename: str, vale_data: List[Dict], emission_time: datetime
             ]
         )
 
-    # Anchos automáticos
+    # Anchos automÃ¡ticos
     page_w, _ = letter
     col_widths = _auto_col_widths(rows, page_w)
 
-    # Convertir Producto y Ubicación a Paragraph para permitir wrap
+    # Convertir Producto y Ubicacion a Paragraph para permitir wrap
     table_rows = [rows[0]]
     for r in rows[1:]:
         table_rows.append([
@@ -153,3 +153,79 @@ def build_vale_pdf(filename: str, vale_data: List[Dict], emission_time: datetime
 
     doc.build(elements)
 
+
+
+def build_unified_vale_pdf(filename: str, rows: List[Dict], emission_time: datetime) -> None:
+    """Genera un PDF de vale unificado en una sola tabla.
+
+    Espera filas con claves: Producto, Lote, Ubicacion, Vencimiento, Cantidad, Origen
+    """
+    doc = SimpleDocTemplate(
+        filename,
+        pagesize=letter,
+        rightMargin=PDF_MARGIN_RIGHT,
+        leftMargin=PDF_MARGIN_LEFT,
+        topMargin=PDF_MARGIN_TOP,
+        bottomMargin=PDF_MARGIN_BOTTOM,
+    )
+    styles = getSampleStyleSheet()
+    elements = []
+
+    title_style = ParagraphStyle("TitleStyle", parent=styles["Title"], fontSize=16, alignment=1)
+    elements.append(Paragraph("<b>VALE DE CONSUMO UNIFICADO - BIOPLATES</b>", title_style))
+    elements.append(Spacer(1, 12))
+
+    metadata = [
+        ["Fecha de Emision:", emission_time.strftime("%d-%m-%Y")],
+        ["Hora de Emision:", emission_time.strftime("%H:%M:%S")],
+        ["Documentos origen:", str(len({r.get('Origen','') for r in rows if r.get('Origen')}))],
+    ]
+    metadata_table = Table(metadata, colWidths=[150, 300])
+    metadata_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    elements.append(metadata_table)
+    elements.append(Spacer(1, 18))
+
+    headers = ["Origen", "Producto", "Lote", "Ubicacion", "Vencimiento", "Cantidad"]
+    raw_rows = [headers]
+    for r in rows:
+        raw_rows.append([
+            r.get("Origen", ""),
+            r.get("Producto", ""),
+            r.get("Lote", ""),
+            r.get("Ubicacion", ""),
+            r.get("Vencimiento", ""),
+            str(r.get("Cantidad", "")),
+        ])
+
+    page_w, _ = letter
+    col_widths = _auto_col_widths(raw_rows, page_w)
+
+    table_rows = [raw_rows[0]]
+    for r in raw_rows[1:]:
+        table_rows.append([
+            r[0],
+            _para(r[1], "NormalWrap"),  # Producto
+            r[2],                        # Lote
+            _para(r[3], "NormalWrap"),  # Ubicacion
+            r[4],                        # Vencimiento
+            r[5],                        # Cantidad
+        ])
+
+    table = Table(table_rows, colWidths=col_widths)
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    elements.append(table)
+    elements.append(Spacer(1, 12))
+
+    elements.append(Paragraph("Fin del vale unificado.", styles["Normal"]))
+    doc.build(elements)

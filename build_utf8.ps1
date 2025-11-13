@@ -1,9 +1,16 @@
-Param(
+﻿Param(
     [ValidateSet('setup','run','package','clean','all')]
-    [string]$Task = 'run',
+    [string]$Task = 'package',
     [string]$VenvPath = '.venv',
-    [string]$Entry = 'vale_consumo_bioplates.py',
-    [switch]$RecreateVenv
+    [string]$Entry = 'run_app.py',
+    [switch]$RecreateVenv,
+    # Opciones estilo build.ps1 de referencia
+    [string]$Name = 'ValeConsumoBioplates',
+    [switch]$Console,
+    [string]$Icon,
+    [switch]$OneDir,
+    [switch]$NoClean,
+    [switch]$InstallMissing
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,8 +45,10 @@ function Install-Dependencies {
     $pkgs = @(
         'pandas',
         'reportlab',
+        'pillow',     # PIL para reportlab/imagenes
         'openpyxl',   # lectura xlsx
-        'xlrd'        # compatibilidad xls antiguos
+        'xlrd',       # compatibilidad xls antiguos
+        'pypdf'       # unificacion de PDFs
     )
     & $Py -m pip install @pkgs
     if ($IsWindows) {
@@ -57,31 +66,63 @@ function Start-Application {
     & $Py $Entry
 }
 
+function Initialize-ToolsAndDeps {
+    param([string]$Py)
+    if ($InstallMissing) {
+        Write-Host "[INFO] Verificando e instalando herramientas (-InstallMissing)" -ForegroundColor Cyan
+        # PyInstaller
+        & $Py -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('PyInstaller') else 1)" | Out-Null
+        if ($LASTEXITCODE -ne 0) { & $Py -m pip install -U pyinstaller pyinstaller-hooks-contrib }
+        # Dependencias runtime
+        & $Py -c "import importlib.util as u,sys;mods=['pandas','reportlab','PIL','openpyxl','xlrd','win32api','win32print','pypdf','PyPDF2'];missing=[m for m in mods if u.find_spec(m) is None];sys.exit(0 if not missing else 1)" | Out-Null
+        if ($LASTEXITCODE -ne 0) { & $Py -m pip install -U pandas reportlab pillow openpyxl xlrd pypdf pywin32 }
+    }
+    # Verificar PyInstaller
+    & $Py -c "import importlib.util as u,sys;sys.exit(0 if u.find_spec('PyInstaller') else 1)" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller no estÃƒÂ¡ instalado. Ejecute con -InstallMissing o instale manualmente." }
+}
+
 function New-AppPackage {
     param([string]$Py, [string]$Entry)
-    & $Py -m pip install --upgrade pyinstaller
-    $name = 'ValeConsumoBioplates'
-    if (-not (Test-Path $Entry)) { throw "No se encontro el entrypoint: $Entry" }
-    $argsList = @('-m','PyInstaller','--noconfirm','--clean','--name', $name,'--windowed','--onefile','--distpath','dist','--workpath','build','--specpath','build', $Entry)
-    Write-Host ("Ejecutando: {0} {1}" -f $Py, ($argsList -join ' ')) -ForegroundColor Cyan
-    & $Py @argsList
-    $code = $LASTEXITCODE
-    if ($code -ne 0) {
-        $pyinstallerExe = Join-Path (Split-Path $Py) 'pyinstaller.exe'
-        if (-not (Test-Path $pyinstallerExe)) { $pyinstallerExe = 'pyinstaller' }
-        Write-Warning "python -m PyInstaller fallo (codigo $code). Probando ejecutable: $pyinstallerExe"
-        & $pyinstallerExe '--noconfirm' '--clean' '--name' $name '--windowed' '--onefile' '--distpath' 'dist' '--workpath' 'build' '--specpath' 'build' $Entry
-        $code = $LASTEXITCODE
-        if ($code -ne 0) { throw "PyInstaller fallo con codigo $code" }
-    }
-    $distRoot = 'dist'
+    Initialize-ToolsAndDeps -Py $Py
+    if (-not (Test-Path $Entry)) { throw "No se encontrÃƒÂ³ el entrypoint: $Entry" }
+
+    # Construir lista de argumentos estilo referencia
+    $argsList = @()
+    $argsList += @($Entry)
+    $argsList += @('--name', $Name)
+    if (-not $OneDir) { $argsList += @('--onefile') }
+    if (-not $NoClean) { $argsList += @('--clean') }
+    $argsList += @('--noconfirm')
+    if ($Console) { $argsList += @('--console') } else { $argsList += @('--windowed','--noconsole') }
+    if ($Icon -and (Test-Path $Icon)) { $argsList += @('--icon', $Icon) }
+    
+# Hidden-imports necesarios
+    $argsList += @('--hidden-import=reportlab')
+    $argsList += @('--hidden-import=PIL')
+    $argsList += @('--hidden-import=openpyxl')
+    $argsList += @('--hidden-import=xlrd')
+    $argsList += @('--hidden-import=win32api')
+    $argsList += @('--hidden-import=win32print')
+    $argsList += @('--hidden-import=pypdf')
+    $argsList += @('--hidden-import=PyPDF2')
+    $argsList += @('--collect-all','reportlab')
+    $argsList += @('--collect-all','PIL')
+    $argsList += @('--collect-all','openpyxl')
+    $argsList += @('--collect-all','pypdf')
+    Write-Host ("Ejecutando: {0} -m PyInstaller {1}" -f $Py, ($argsList -join ' ')) -ForegroundColor Cyan
+    & $Py -m PyInstaller @argsList
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller fallÃƒÂ³ con cÃƒÂ³digo $LASTEXITCODE" }
+
+    # Post-copia a dist
+    $distRoot = Join-Path $PSScriptRoot 'dist'
     $histSrc = 'Vales_Historial'
     $histDst = Join-Path $distRoot 'Vales_Historial'
     if (!(Test-Path $histDst)) { New-Item -ItemType Directory -Force -Path $histDst | Out-Null }
     if (Test-Path $histSrc) { Copy-Item -Recurse -Force "$histSrc\*" $histDst -ErrorAction SilentlyContinue }
     $settingsSrc = 'app_settings.json'
     if (Test-Path $settingsSrc) { Copy-Item -Force $settingsSrc (Join-Path $distRoot $settingsSrc) -ErrorAction SilentlyContinue }
-    Write-Host "Paquete generado en: dist/$name.exe" -ForegroundColor Green
+    Write-Host "Paquete generado en: dist/$Name.exe" -ForegroundColor Green
 }
 
 function Remove-BuildArtifacts {
@@ -119,4 +160,7 @@ switch ($Task) {
     }
     default { throw "Tarea desconocida: $Task" }
 }
+
+
+
 

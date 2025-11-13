@@ -37,3 +37,46 @@ def set_last_inventory_dir(path: str) -> None:
     data['last_inventory_dir'] = path
     _save(data)
 
+
+# --- Printing preferences ---
+def get_auto_print() -> bool:
+    return bool(_load().get('auto_print', False))
+
+
+def set_auto_print(enabled: bool) -> None:
+    data = _load()
+    data['auto_print'] = bool(enabled)
+    _save(data)
+
+
+def get_sumatra_path() -> str | None:
+    val = _load().get('sumatra_path')
+    return val if isinstance(val, str) and val else None
+
+
+def set_sumatra_path(path: str) -> None:
+    data = _load()
+    data['sumatra_path'] = path
+    _save(data)
+
+
+# --- File label reminder preferences ---
+def get_reminder_enabled() -> bool:
+    return bool(_load().get('reminder_enabled', True))
+
+
+def set_reminder_enabled(enabled: bool) -> None:
+    data = _load()
+    data['reminder_enabled'] = bool(enabled)
+    _save(data)
+
+
+def get_reminder_text() -> str:
+    val = _load().get('reminder_text')
+    return val if isinstance(val, str) and val else 'Recordar solicitar archivo actualizado'
+
+
+def set_reminder_text(text: str) -> None:
+    data = _load()
+    data['reminder_text'] = text
+    _save(data)
