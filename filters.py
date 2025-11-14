@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Optional
+
 import pandas as pd
 
 
@@ -41,7 +43,7 @@ class FilterOptions:
             out = out[out['Ubicacion'].astype(str).str.lower().str.contains(ubi_t, na=False)]
 
         # Vencimiento rango (YYYY-MM-DD)
-        def _parse(d: str):
+        def _parse(d: str) -> Optional[datetime]:
             try:
                 return datetime.strptime(d, '%Y-%m-%d')
             except Exception:

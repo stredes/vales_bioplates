@@ -1,0 +1,12 @@
+## Dependencias principales para ValeConsumoBioplates
+pandas>=2.1,<3.0
+reportlab>=4.0,<5.0
+Pillow>=10.0,<11.0
+openpyxl>=3.1,<4.0
+xlrd>=2.0,<3.0
+pypdf>=4.0,<5.0
+PyPDF2>=3.0,<4.0
+pywin32>=306; platform_system == "Windows"
+## Herramientas de empaquetado
+pyinstaller>=6.4,<7.0
+pyinstaller-hooks-contrib>=2024.3

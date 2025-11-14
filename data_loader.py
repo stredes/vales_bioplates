@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import unicodedata
+from typing import Iterable
+
 import pandas as pd
-from typing import Tuple
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -20,9 +24,9 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         return s2.lower()
 
     cols = list(df.columns)
-    canon_to_actual = { _canon(c): c for c in cols }
+    canon_to_actual = {_canon(c): c for c in cols}
 
-    def _map_to(target: str, candidates: list[str]):
+    def _map_to(target: str, candidates: Iterable[str]) -> None:
         if target in df.columns:
             return
         for k in candidates:
@@ -78,6 +82,7 @@ def load_inventory(file_path: str, area_filter: str | None = None) -> pd.DataFra
     if not os.path.exists(file_path):
         raise FileNotFoundError(file_path)
 
+    logger.info("Cargando inventario desde %s", file_path)
     df = pd.read_excel(file_path)
     df = _normalize_columns(df)
 
@@ -127,4 +132,9 @@ def load_inventory(file_path: str, area_filter: str | None = None) -> pd.DataFra
             else:
                 df[c] = ""
 
+    logger.info(
+        "Inventario cargado: %d filas (filtro área=%s)",
+        len(df),
+        area_filter or "N/A",
+    )
     return df[desired]

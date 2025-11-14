@@ -10,7 +10,9 @@
     [string]$Icon,
     [switch]$OneDir,
     [switch]$NoClean,
-    [switch]$InstallMissing
+    [switch]$InstallMissing,
+    [string]$RequirementsFile = 'requirements.txt',
+    [string]$HostPythonPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,39 +22,116 @@ function Get-PythonPath {
     param([string]$VenvPath)
     $venvPy = Join-Path $VenvPath 'Scripts/python.exe'
     if (Test-Path $venvPy) { return (Resolve-Path $venvPy).Path }
-    if (Get-Command python -ErrorAction SilentlyContinue) { return 'python' }
-    if (Get-Command py -ErrorAction SilentlyContinue) { return 'py' }
-    throw 'Python no encontrado en PATH ni en el venv.'
+    return Resolve-HostPython
 }
 
 function New-Venv {
     param([string]$VenvPath, [switch]$Recreate)
     if ($Recreate -and (Test-Path $VenvPath)) { Remove-Item -Recurse -Force $VenvPath }
     if (-not (Test-Path $VenvPath)) {
-        if (Get-Command python -ErrorAction SilentlyContinue) {
-            python -m venv $VenvPath
-        } elseif (Get-Command py -ErrorAction SilentlyContinue) {
-            py -m venv $VenvPath
-        } else {
-            throw 'Python no encontrado para crear el entorno virtual.'
-        }
+        $hostPy = Resolve-HostPython
+        & $hostPy -m venv $VenvPath
     }
 }
 
+function Resolve-HostPython {
+    param([string]$PreferredVersion = '3')
+    if ($script:HostPython) { return $script:HostPython }
+    $paramOverride = $HostPythonPath
+    if ($paramOverride -and (Test-Path $paramOverride)) {
+        $script:HostPython = (Resolve-Path $paramOverride).Path
+        return $script:HostPython
+    }
+    $envOverride = $Env:HOST_PYTHON
+    if ($envOverride -and (Test-Path $envOverride)) {
+        $script:HostPython = (Resolve-Path $envOverride).Path
+        return $script:HostPython
+    }
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        try {
+            $pyPath = (& py "-$PreferredVersion" -c "import sys;print(sys.executable)") 2>$null
+            if ($LASTEXITCODE -eq 0 -and $pyPath) {
+                $resolved = $pyPath.Trim()
+                if (Test-Path $resolved) { $script:HostPython = $resolved; return $resolved }
+            }
+        } catch {}
+    }
+    foreach ($candidate in @('python','python3')) {
+        $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
+        if ($cmd -and -not ($cmd.Source -like '*Microsoft\WindowsApps*')) {
+            try {
+                $path = (& $candidate -c "import sys;print(sys.executable)") 2>$null
+                if ($LASTEXITCODE -eq 0 -and $path) {
+                    $resolved = $path.Trim()
+                    if (Test-Path $resolved) { $script:HostPython = $resolved; return $resolved }
+                }
+            } catch {}
+        }
+    }
+    foreach ($known in Get-CommonPythonPaths) {
+        if (Test-Path $known) {
+            $script:HostPython = (Resolve-Path $known).Path
+            return $script:HostPython
+        }
+    }
+    throw "Python no encontrado. Use -HostPythonPath, configure HOST_PYTHON o instale Python 3.x"
+}
+
+function Get-CommonPythonPaths {
+    $candidates = @()
+    $localBase = Join-Path $Env:LOCALAPPDATA 'Programs\Python'
+    if (Test-Path $localBase) {
+        $candidates += Get-ChildItem -Path $localBase -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like 'Python3*' } |
+            ForEach-Object { Join-Path $_.FullName 'python.exe' }
+    }
+    foreach ($pf in @($Env:ProgramFiles, ${Env:ProgramFiles(x86)})) {
+        if ($pf) {
+            $candidates += Get-ChildItem -Path $pf -Directory -Filter 'Python*' -ErrorAction SilentlyContinue |
+                ForEach-Object { Join-Path $_.FullName 'python.exe' }
+        }
+    }
+    return $candidates
+}
+
+function Get-RequirementsPackages {
+    param([string]$FilePath)
+    if (-not (Test-Path $FilePath)) { return @() }
+    $lines = Get-Content $FilePath | Where-Object { $_ -and -not $_.Trim().StartsWith('#') }
+    $packages = @()
+    foreach ($line in $lines) {
+        $clean = ($line -split '#')[0].Trim()
+        if (-not $clean) { continue }
+        $clean = ($clean -split ';')[0].Trim()
+        if (-not $clean) { continue }
+        $packages += $clean
+    }
+    return $packages
+}
+
+
+
 function Install-Dependencies {
-    param([string]$Py)
+    param([string]$Py, [string]$RequirementsFile)
     & $Py -m pip install --upgrade pip
-    $pkgs = @(
-        'pandas',
-        'reportlab',
-        'pillow',     # PIL para reportlab/imagenes
-        'openpyxl',   # lectura xlsx
-        'xlrd',       # compatibilidad xls antiguos
-        'pypdf'       # unificacion de PDFs
-    )
-    & $Py -m pip install @pkgs
-    if ($IsWindows) {
-        try { & $Py -m pip install pywin32 } catch { Write-Warning 'pywin32 opcional; continuando.' }
+    $reqs = Get-RequirementsPackages -FilePath $RequirementsFile
+    if ($reqs.Count -gt 0) {
+        Write-Host "[INFO] Instalando dependencias desde $RequirementsFile" -ForegroundColor Cyan
+        & $Py -m pip install -r $RequirementsFile
+    } else {
+        Write-Warning "No se encontro $RequirementsFile; instalando conjunto minimo."
+        $pkgs = @(
+            'pandas',
+            'reportlab',
+            'pillow',     # PIL para reportlab/imagenes
+            'openpyxl',   # lectura xlsx
+            'xlrd',       # compatibilidad xls antiguos
+            'pypdf'       # unificacion de PDFs
+        )
+        & $Py -m pip install @pkgs
+        if ($IsWindows) {
+            try { & $Py -m pip install pywin32 } catch { Write-Warning 'pywin32 opcional; continuando.' }
+        }
     }
 }
 
@@ -67,7 +146,7 @@ function Start-Application {
 }
 
 function Initialize-ToolsAndDeps {
-    param([string]$Py)
+    param([string]$Py, [string]$RequirementsFile)
     if ($InstallMissing) {
         Write-Host "[INFO] Verificando e instalando herramientas (-InstallMissing)" -ForegroundColor Cyan
         # PyInstaller
@@ -83,8 +162,8 @@ function Initialize-ToolsAndDeps {
 }
 
 function New-AppPackage {
-    param([string]$Py, [string]$Entry)
-    Initialize-ToolsAndDeps -Py $Py
+    param([string]$Py, [string]$Entry, [string]$RequirementsFile)
+    Initialize-ToolsAndDeps -Py $Py -RequirementsFile $RequirementsFile
     if (-not (Test-Path $Entry)) { throw "No se encontrÃƒÂ³ el entrypoint: $Entry" }
 
     # Construir lista de argumentos estilo referencia
@@ -135,19 +214,19 @@ switch ($Task) {
     'setup' {
         New-Venv -VenvPath $VenvPath -Recreate:$RecreateVenv
         $py = Get-PythonPath -VenvPath $VenvPath
-        Install-Dependencies -Py $py
+        Install-Dependencies -Py $py -RequirementsFile $RequirementsFile
     }
     'run' {
         New-Venv -VenvPath $VenvPath
         $py = Get-PythonPath -VenvPath $VenvPath
-        Install-Dependencies -Py $py
+        Install-Dependencies -Py $py -RequirementsFile $RequirementsFile
         Start-Application -Py $py -Entry $Entry
     }
     'package' {
         New-Venv -VenvPath $VenvPath
         $py = Get-PythonPath -VenvPath $VenvPath
-        Install-Dependencies -Py $py
-        New-AppPackage -Py $py -Entry $Entry
+        Install-Dependencies -Py $py -RequirementsFile $RequirementsFile
+        New-AppPackage -Py $py -Entry $Entry -RequirementsFile $RequirementsFile
     }
     'clean' {
         Remove-BuildArtifacts
@@ -155,12 +234,9 @@ switch ($Task) {
     'all' {
         New-Venv -VenvPath $VenvPath -Recreate:$RecreateVenv
         $py = Get-PythonPath -VenvPath $VenvPath
-        Install-Dependencies -Py $py
-        New-AppPackage -Py $py -Entry $Entry
+        Install-Dependencies -Py $py -RequirementsFile $RequirementsFile
+        New-AppPackage -Py $py -Entry $Entry -RequirementsFile $RequirementsFile
     }
     default { throw "Tarea desconocida: $Task" }
 }
-
-
-
 

@@ -1,15 +1,18 @@
 ﻿#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import logging
 import os
 import subprocess
+from typing import Optional
 from tkinter import messagebox
 
 import config as app_config
 
+logger = logging.getLogger(__name__)
 
 
-def _find_sumatra_exe():
+def _find_sumatra_exe() -> Optional[str]:
     """Return path to SumatraPDF.exe if present via config/env or typical paths."""
     try:
         sp = getattr(app_config, 'SUMATRA_PDF_PATH', None)
@@ -39,10 +42,12 @@ def print_pdf_windows(filename: str, copies: int = 1) -> None:
             "Error de Impresión",
             "La impresión automática requiere Windows y el módulo pywin32.",
         )
+        logger.warning("Intento de impresión en OS no soportado")
         return
 
     if not os.path.exists(filename):
         messagebox.showerror("Error de Impresión", "El archivo PDF no existe.")
+        logger.error("Archivo para impresión no existe: %s", filename)
         return
 
     try:
@@ -65,9 +70,11 @@ def print_pdf_windows(filename: str, copies: int = 1) -> None:
                     "Impresión Enviada",
                     f"Se han enviado {copies} copias del vale a la impresora predeterminada.",
                 )
+                logger.info("PDF enviado a SumatraPDF (default printer) copias=%s", copies)
                 return
             except Exception:
                 # seguirá con ShellExecute
+                logger.warning("SumatraPDF no pudo imprimir, se intentara ShellExecute", exc_info=True)
                 pass
 
         # Impresora predeterminada
@@ -81,6 +88,7 @@ def print_pdf_windows(filename: str, copies: int = 1) -> None:
                 "Error de Impresión",
                 "No hay impresora predeterminada configurada en Windows. Configure una e intente nuevamente.",
             )
+            logger.error("No hay impresora predeterminada configurada en Windows")
             return
 
         last_err = None
@@ -109,8 +117,12 @@ def print_pdf_windows(filename: str, copies: int = 1) -> None:
                     cmd = [runner, "-silent", "-print-to", default_printer, filename]
                     subprocess.run(cmd, check=True, creationflags=0x08000000)
                     last_err = None
+                    logger.info("PDF enviado via SumatraPDF a impresora %s", default_printer)
                 except Exception as e3:
                     last_err = e3
+                    logger.error("SumatraPDF fallo al imprimir", exc_info=True)
+            else:
+                logger.warning("SumatraPDF no disponible para fallback de impresión")
 
         if last_err:
             msg = str(last_err)
@@ -129,7 +141,9 @@ def print_pdf_windows(filename: str, copies: int = 1) -> None:
             "Impresión Enviada",
             f"Se han enviado {copies} copias del vale a la impresora predeterminada.",
         )
+        logger.info("PDF enviado a impresora predeterminada via ShellExecute copias=%s", copies)
     except Exception as e:
         messagebox.showerror("Error de Impresión", f"Fallo al enviar a la impresora: {e}")
+        logger.exception("Fallo inesperado al enviar a la impresora")
 
 

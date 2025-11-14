@@ -3,21 +3,19 @@
 
 from __future__ import annotations
 
-from typing import List, Dict
-from reportlab.lib.pagesizes import letter
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.pdfbase.pdfmetrics import stringWidth
-
+import logging
 from datetime import datetime
+from typing import Dict, Iterable, List
 
-from config import (
-    PDF_MARGIN_LEFT,
-    PDF_MARGIN_RIGHT,
-    PDF_MARGIN_TOP,
-    PDF_MARGIN_BOTTOM,
-)
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.pdfbase.pdfmetrics import stringWidth
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+from config import PDF_MARGIN_BOTTOM, PDF_MARGIN_LEFT, PDF_MARGIN_RIGHT, PDF_MARGIN_TOP
+
+logger = logging.getLogger(__name__)
 
 
 def _para(text: str, style_name: str = "Normal") -> Paragraph:
@@ -28,8 +26,8 @@ def _para(text: str, style_name: str = "Normal") -> Paragraph:
     return Paragraph(text.replace("&", "&amp;"), styles[style_name])
 
 
-def _auto_col_widths(rows: List[List[str]], page_width: int, padd: int = 16) -> List[int]:
-    # Calcula anchos segÃºn el contenido + padding, y ajusta al ancho disponible
+def _auto_col_widths(rows: Iterable[Iterable[str]], page_width: int, padd: int = 16) -> List[int]:
+    # Calcula anchos segun el contenido + padding, y ajusta al ancho disponible
     # Fuente asumida: Helvetica 10
     font_name = "Helvetica"
     font_size = 10
@@ -152,6 +150,7 @@ def build_vale_pdf(filename: str, vale_data: List[Dict], emission_time: datetime
     elements.append(signature_table)
 
     doc.build(elements)
+    logger.info("PDF generado correctamente en %s", filename)
 
 
 
@@ -229,3 +228,4 @@ def build_unified_vale_pdf(filename: str, rows: List[Dict], emission_time: datet
 
     elements.append(Paragraph("Fin del vale unificado.", styles["Normal"]))
     doc.build(elements)
+    logger.info("PDF unificado generado: %s (%d filas)", filename, len(rows))
