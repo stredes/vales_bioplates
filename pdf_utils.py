@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Dict, Iterable, List
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
@@ -75,7 +75,7 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
     """
     doc = SimpleDocTemplate(
         filename,
-        pagesize=letter,
+        pagesize=A4,
         rightMargin=PDF_MARGIN_RIGHT,
         leftMargin=PDF_MARGIN_LEFT,
         topMargin=PDF_MARGIN_TOP,
@@ -85,7 +85,7 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
     elements = []
 
     title_style = ParagraphStyle("TitleStyle", parent=styles["Title"], fontSize=16, alignment=1)
-    elements.append(Paragraph("<b>SOLICITUD DE PRODUCTOS (USO BODEGA) - BIOPLATES</b>", title_style))
+    elements.append(Paragraph("<b>SOLICITUD DE PRODUCTOS<br/>(USO BODEGA)</b>", title_style))
     elements.append(Spacer(1, 12))
 
     # Obtener datos
@@ -133,7 +133,7 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
         )
 
     # Anchos automÃ¡ticos
-    page_w, _ = letter
+    page_w, _ = A4
     col_widths = _auto_col_widths(rows, page_w)
 
     # Convertir Producto y Ubicacion a Paragraph para permitir wrap
@@ -206,7 +206,7 @@ def build_unified_vale_pdf(filename: str, rows: List[Dict], emission_time: datet
     """
     doc = SimpleDocTemplate(
         filename,
-        pagesize=letter,
+        pagesize=A4,
         rightMargin=PDF_MARGIN_RIGHT,
         leftMargin=PDF_MARGIN_LEFT,
         topMargin=PDF_MARGIN_TOP,
@@ -216,7 +216,7 @@ def build_unified_vale_pdf(filename: str, rows: List[Dict], emission_time: datet
     elements = []
 
     title_style = ParagraphStyle("TitleStyle", parent=styles["Title"], fontSize=16, alignment=1)
-    elements.append(Paragraph("<b>SOLICITUD DE PRODUCTOS UNIFICADA (USO BODEGA) - BIOPLATES</b>", title_style))
+    elements.append(Paragraph("<b>SOLICITUD DE PRODUCTOS UNIFICADA<br/>(USO BODEGA)</b>", title_style))
     elements.append(Spacer(1, 12))
 
     metadata = [
@@ -246,7 +246,7 @@ def build_unified_vale_pdf(filename: str, rows: List[Dict], emission_time: datet
             str(r.get("Cantidad", "")),
         ])
 
-    page_w, _ = letter
+    page_w, _ = A4
     col_widths = _auto_col_widths(raw_rows, page_w)
 
     table_rows = [raw_rows[0]]
