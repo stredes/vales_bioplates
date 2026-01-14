@@ -195,15 +195,18 @@ function New-AppPackage {
 
     # Post-copia a dist
     $distRoot = Join-Path $PSScriptRoot 'dist'
+    $distBase = if ($OneDir) { Join-Path $distRoot $Name } else { $distRoot }
     $histSrc = 'Vales_Historial'
-    $histDst = Join-Path $distRoot 'Vales_Historial'
+    $histDst = Join-Path $distBase 'Vales_Historial'
+    if (!(Test-Path $distBase)) { New-Item -ItemType Directory -Force -Path $distBase | Out-Null }
     if (!(Test-Path $histDst)) { New-Item -ItemType Directory -Force -Path $histDst | Out-Null }
     if (Test-Path $histSrc) { Copy-Item -Recurse -Force "$histSrc\*" $histDst -ErrorAction SilentlyContinue }
     $settingsSrc = 'app_settings.json'
-    if (Test-Path $settingsSrc) { Copy-Item -Force $settingsSrc (Join-Path $distRoot $settingsSrc) -ErrorAction SilentlyContinue }
+    if (Test-Path $settingsSrc) { Copy-Item -Force $settingsSrc (Join-Path $distBase $settingsSrc) -ErrorAction SilentlyContinue }
     $instrSrc = 'instrucciones.txt'
-    if (Test-Path $instrSrc) { Copy-Item -Force $instrSrc (Join-Path $distRoot $instrSrc) -ErrorAction SilentlyContinue }
-    Write-Host "Paquete generado en: dist/$Name.exe" -ForegroundColor Green
+    if (Test-Path $instrSrc) { Copy-Item -Force $instrSrc (Join-Path $distBase $instrSrc) -ErrorAction SilentlyContinue }
+    $exePath = if ($OneDir) { Join-Path $distBase "$Name.exe" } else { Join-Path $distRoot "$Name.exe" }
+    Write-Host "Paquete generado en: $exePath" -ForegroundColor Green
 }
 
 function Remove-BuildArtifacts {

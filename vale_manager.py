@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 import logging
-from typing import List, Optional, TypedDict
+from typing import List, Optional, TypedDict, Callable
 
 import pandas as pd
 
@@ -18,10 +18,13 @@ logger = logging.getLogger(__name__)
 
 class ValeItem(TypedDict):
     Producto: str
+    Codigo: str
     Lote: str
     Vencimiento: str
     Ubicacion: str
+    Bodega: str
     Cantidad: int
+    Stock: int
     Stock_Original_Index: int
 
 
@@ -30,9 +33,17 @@ class ValeManager:
     bioplates_inventory: pd.DataFrame = field(default_factory=pd.DataFrame)
     current_vale: List[ValeItem] = field(default_factory=list)
 
-    def load(self, file_path: str, area_filter: Optional[str] = None) -> pd.DataFrame:
+    def load(
+        self,
+        file_path: str,
+        area_filter: Optional[str] = None,
+        progress_cb: Optional[Callable[[int, Optional[int], str], None]] = None,
+        chunk_size: int = 2000,
+    ) -> pd.DataFrame:
         logger.info("Solicitando carga de inventario (archivo=%s, area=%s)", file_path, area_filter)
-        self.bioplates_inventory = load_inventory(file_path, area_filter)
+        self.bioplates_inventory = load_inventory(
+            file_path, area_filter, progress_cb=progress_cb, chunk_size=chunk_size
+        )
         return self.bioplates_inventory
 
     def is_vale_empty(self) -> bool:
@@ -49,10 +60,13 @@ class ValeManager:
 
         new_item: ValeItem = {
             'Producto': str(product_data['Nombre_del_Producto']),
+            'Codigo': str(product_data.get('Codigo', '')),
             'Lote': str(product_data['Lote']),
             'Vencimiento': str(product_data['Vencimiento']),
             'Ubicacion': str(product_data.get('Ubicacion', '')),
+            'Bodega': str(product_data.get('Bodega', '')),
             'Cantidad': int(quantity),
+            'Stock': int(current_stock),
             'Stock_Original_Index': int(item_index),
         }
 

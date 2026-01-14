@@ -4,6 +4,8 @@
 import logging
 import os
 import subprocess
+import threading
+import time
 from typing import Optional
 from tkinter import messagebox
 
@@ -29,51 +31,92 @@ def _find_sumatra_exe() -> Optional[str]:
             return p
     return None
 
-def print_pdf_windows(filename: str, copies: int = 1) -> None:
+
+def _close_preview_window(filename: str, delay_sec: float = 2.0) -> None:
+    def _worker() -> None:
+        time.sleep(max(0.0, delay_sec))
+        try:
+            import win32con  # type: ignore
+            import win32gui  # type: ignore
+        except Exception:
+            return
+        base = os.path.basename(filename)
+        if not base:
+            return
+
+        def _enum(hwnd, _):
+            try:
+                if not win32gui.IsWindowVisible(hwnd):
+                    return
+                title = win32gui.GetWindowText(hwnd)
+                if base in title:
+                    win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+            except Exception:
+                pass
+
+        try:
+            win32gui.EnumWindows(_enum, None)
+        except Exception:
+            pass
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def print_pdf_windows(filename: str, copies: int = 1, preview: bool = False) -> None:
     """Imprime un PDF en Windows con varias rutas de respaldo.
 
     Intentos:
-      1) ShellExecute 'print' (requiere asociación de impresión para .pdf)
+      1) ShellExecute 'print' (requiere asociaci?n de impresi?n para .pdf)
       2) ShellExecute 'printto' con impresora predeterminada
-      3) SumatraPDF en modo silencioso si está instalado
+      3) SumatraPDF en modo silencioso si est? instalado
     """
     if not getattr(app_config, 'WINDOWS_OS', False):
         messagebox.showerror(
-            "Error de Impresión",
-            "La impresión automática requiere Windows y el módulo pywin32.",
+            "Error de Impresi?n",
+            "La impresi?n autom?tica requiere Windows y el m?dulo pywin32.",
         )
-        logger.warning("Intento de impresión en OS no soportado")
+        logger.warning("Intento de impresi?n en OS no soportado")
         return
 
     if not os.path.exists(filename):
-        messagebox.showerror("Error de Impresión", "El archivo PDF no existe.")
-        logger.error("Archivo para impresión no existe: %s", filename)
+        messagebox.showerror("Error de Impresi?n", "El archivo PDF no existe.")
+        logger.error("Archivo para impresi?n no existe: %s", filename)
         return
 
     try:
         import win32api  # type: ignore
         import win32print  # type: ignore
 
-        # Intento prioritario: SumatraPDF si está disponible (evita errores de asociación)
+        # Intento prioritario: SumatraPDF si est? disponible (evita errores de asociaci?n)
         runner_pref = None
         try:
-            # función añadida arriba
             runner_pref = _find_sumatra_exe()
         except Exception:
             runner_pref = None
         if runner_pref:
             try:
+                if preview:
+                    cmd = [runner_pref, "-print-to-default", "-exit-on-print", filename]
+                    if int(copies) > 1:
+                        cmd += ["-print-settings", f"copies={int(copies)}"]
+                    subprocess.Popen(cmd)
+                    messagebox.showinfo(
+                        "Impresi?n Enviada",
+                        f"Se han enviado {copies} copias del vale a la impresora predeterminada.",
+                    )
+                    logger.info("PDF enviado a SumatraPDF con preview copias=%s", copies)
+                    return
                 for _ in range(max(1, int(copies))):
                     cmd = [runner_pref, "-silent", "-print-to-default", filename]
                     subprocess.run(cmd, check=True, creationflags=0x08000000)
                 messagebox.showinfo(
-                    "Impresión Enviada",
+                    "Impresi?n Enviada",
                     f"Se han enviado {copies} copias del vale a la impresora predeterminada.",
                 )
                 logger.info("PDF enviado a SumatraPDF (default printer) copias=%s", copies)
                 return
             except Exception:
-                # seguirá con ShellExecute
+                # seguir? con ShellExecute
                 logger.warning("SumatraPDF no pudo imprimir, se intentara ShellExecute", exc_info=True)
                 pass
 
@@ -85,11 +128,19 @@ def print_pdf_windows(filename: str, copies: int = 1) -> None:
 
         if not default_printer:
             messagebox.showerror(
-                "Error de Impresión",
+                "Error de Impresi?n",
                 "No hay impresora predeterminada configurada en Windows. Configure una e intente nuevamente.",
             )
             logger.error("No hay impresora predeterminada configurada en Windows")
             return
+
+        opened_preview = False
+        if preview:
+            try:
+                os.startfile(filename)
+                opened_preview = True
+            except Exception:
+                opened_preview = False
 
         last_err = None
         for _ in range(max(1, int(copies))):
@@ -110,7 +161,7 @@ def print_pdf_windows(filename: str, copies: int = 1) -> None:
                 break
 
         if last_err:
-            # 3) SumatraPDF (si existe o se definió vía config)
+            # 3) SumatraPDF (si existe o se defini? v?a config)
             runner = _find_sumatra_exe()
             if runner:
                 try:
@@ -122,28 +173,28 @@ def print_pdf_windows(filename: str, copies: int = 1) -> None:
                     last_err = e3
                     logger.error("SumatraPDF fallo al imprimir", exc_info=True)
             else:
-                logger.warning("SumatraPDF no disponible para fallback de impresión")
+                logger.warning("SumatraPDF no disponible para fallback de impresi?n")
 
         if last_err:
             msg = str(last_err)
             if "31" in msg:  # SE_ERR_NOASSOC
                 messagebox.showerror(
-                    "Error de Impresión",
-                    "No hay asociación para imprimir PDFs (error 31).\n"
-                    "Soluciones: instale/establezca como predeterminado un lector PDF con soporte de impresión (Adobe Reader, SumatraPDF, etc.)\n"
-                    "o configure la asociación de impresión para archivos PDF.",
+                    "Error de Impresion",
+                    "No hay asociacion para imprimir PDFs (error 31).\n"
+                    "Soluciones: instale/establezca como predeterminado un lector PDF con soporte de impresion (Adobe Reader, SumatraPDF, etc.)\n"
+                    "o configure la asociacion de impresion para archivos PDF.",
                 )
             else:
-                messagebox.showerror("Error de Impresión", f"Fallo al enviar a la impresora: {last_err}")
+                messagebox.showerror("Error de Impresi?n", f"Fallo al enviar a la impresora: {last_err}")
             return
 
+        if opened_preview:
+            _close_preview_window(filename, delay_sec=2.0)
         messagebox.showinfo(
-            "Impresión Enviada",
+            "Impresi?n Enviada",
             f"Se han enviado {copies} copias del vale a la impresora predeterminada.",
         )
         logger.info("PDF enviado a impresora predeterminada via ShellExecute copias=%s", copies)
     except Exception as e:
-        messagebox.showerror("Error de Impresión", f"Fallo al enviar a la impresora: {e}")
+        messagebox.showerror("Error de Impresi?n", f"Fallo al enviar a la impresora: {e}")
         logger.exception("Fallo inesperado al enviar a la impresora")
-
-

@@ -14,9 +14,11 @@ evitar texto corrupto en Windows. Incluye:
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 import os
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Callable
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -31,6 +33,9 @@ import settings_store as settings
 from vale_registry import ValeRegistry
 from user_manager import UserManager
 
+MSG_SELECT_HISTORY = "Seleccione una solicitud del listado."
+MSG_SELECT_PRODUCT = "Seleccione un producto de la tabla."
+
 
 class ValeConsumoApp:
     def __init__(self, master: tk.Tk) -> None:
@@ -41,6 +46,12 @@ class ValeConsumoApp:
         except Exception:
             self.master.geometry('1280x800')
 
+        self.log = logging.getLogger("vale_consumo_bioplates")
+        self._load_queue = queue.Queue()
+        self._load_progress = None
+        self._load_progress_bar = None
+        self._load_progress_label = None
+        self._loading_inventory = False
         self.manager = ValeManager()
         # Carpeta de historial desde ajustes (fallback a config)
         try:
@@ -55,6 +66,9 @@ class ValeConsumoApp:
         self.ubicacion_exclude_vars = {}
         self.ubicacion_exclude_search_var = None
         self.ubicacion_checklist_frame = None
+        self.ubicacion_checklist_visible = tk.BooleanVar(value=False)
+        self.ubicacion_toggle_btn = None
+        self.ubicacion_search_entry = None
 
         style = ttk.Style(self.master)
         try:
@@ -580,21 +594,21 @@ class ValeConsumoApp:
         table_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 8))
         frame.columnconfigure(0, weight=1)
 
-        table_frame = ttk.Frame(frame)
-        table_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 8))
         self._init_product_tree(table_frame)
         self._init_filter_panel(frame)
 
     def _init_product_tree(self, table_frame: ttk.Frame) -> None:
         self.product_tree = ttk.Treeview(
             table_frame,
-            columns=("Producto", "Lote", "Ubicacion", "Vencimiento", "Stock"),
+            columns=("Producto", "Codigo", "Lote", "Bodega", "Ubicacion", "Vencimiento", "Stock"),
             show='headings',
             selectmode='browse',
         )
         headers = (
             ('Producto', 'Producto', 280, 'w'),
+            ('Codigo', 'Codigo', 110, 'center'),
             ('Lote', 'Lote', 120, 'center'),
+            ('Bodega', 'Bodega', 120, 'center'),
             ('Ubicacion', 'Ubicacion', 160, 'center'),
             ('Vencimiento', 'Vencimiento', 130, 'center'),
             ('Stock', 'Stock', 80, 'center'),
@@ -615,10 +629,10 @@ class ValeConsumoApp:
         self.product_tree.bind('<Configure>', self._autosize_product_columns)
         
         # Configurar tags de color para vencimiento
-        self.product_tree.tag_configure('vencimiento_proximo', background='#ffcccc', foreground='#cc0000')  # Rojo: por vencer
-        self.product_tree.tag_configure('vencido', background='#ffe0b2', foreground='#b85c00')  # Naranjo: vencido
-        self.product_tree.tag_configure('vencimiento_mas_proximo', background='#e8f1ff', foreground='#1f4e79')  # Azul: mas proximo
+        self.product_tree.tag_configure('vencido', background='#ffb3b3', foreground='#b00000')  # Rojo: vencido
+        self.product_tree.tag_configure('vencimiento_proximo', background='#cfe5ff', foreground='#004a99')  # Azul: proximo a vencer
 
+    def _init_filter_panel(self, frame: ttk.Frame) -> None:
         # Panel de control con scroll
         filters_lf = ttk.LabelFrame(frame, text="Filtros y Acciones", padding=0, width=320)  # Aumentado de 260 a 320
         filters_lf.grid(row=0, column=1, sticky='ns')
@@ -672,6 +686,7 @@ class ValeConsumoApp:
 
         canvas.bind_all('<MouseWheel>', _on_mousewheel)
 
+    def _build_filter_controls(self) -> None:
         # Buscar
         ttk.Label(self.control_frame, text="Buscar producto:", font=('Segoe UI', 10)).grid(row=0, column=0, sticky='w', pady=(0, 4))
         self.search_var = tk.StringVar()
@@ -714,13 +729,23 @@ class ValeConsumoApp:
         self.stock_only_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(self.control_frame, text='Solo con stock', variable=self.stock_only_var, command=self.filter_products).grid(row=16, column=0, sticky='w', pady=(6, 8))
 
-        # Excluir ubicaciones
-        ttk.Label(self.control_frame, text="Excluir ubicaciones:", font=('Segoe UI', 10)).grid(row=17, column=0, sticky='w')
+        # Excluir ubicaciones (checklist desplegable)
+        ubic_head = ttk.Frame(self.control_frame)
+        ubic_head.grid(row=17, column=0, sticky='ew')
+        ubic_head.columnconfigure(0, weight=1)
+        ttk.Label(ubic_head, text="Excluir ubicaciones:", font=('Segoe UI', 10)).grid(row=0, column=0, sticky='w')
+        self.ubicacion_toggle_btn = ttk.Button(ubic_head, text="Mostrar", command=self._toggle_ubicaciones_checklist, width=10)
+        self.ubicacion_toggle_btn.grid(row=0, column=1, sticky='e')
+
         self.ubicacion_exclude_search_var = tk.StringVar()
         self.ubicacion_exclude_search_var.trace_add('write', lambda *_: self._render_ubicaciones_checklist())
-        ttk.Entry(self.control_frame, textvariable=self.ubicacion_exclude_search_var, width=26, font=('Segoe UI', 10)).grid(row=18, column=0, sticky='ew', pady=(0, 6))
+        self.ubicacion_search_entry = ttk.Entry(self.control_frame, textvariable=self.ubicacion_exclude_search_var, width=26, font=('Segoe UI', 10))
+        self.ubicacion_search_entry.grid(row=18, column=0, sticky='ew', pady=(0, 6))
         self.ubicacion_checklist_frame = ttk.Frame(self.control_frame)
         self.ubicacion_checklist_frame.grid(row=19, column=0, sticky='ew', pady=(0, 12))
+        if not self.ubicacion_checklist_visible.get():
+            self.ubicacion_search_entry.grid_remove()
+            self.ubicacion_checklist_frame.grid_remove()
 
         # Separador
         ttk.Separator(self.control_frame, orient='horizontal').grid(row=20, column=0, sticky='ew', pady=(8,12))
@@ -754,12 +779,12 @@ class ValeConsumoApp:
         legend_frame = ttk.Frame(self.control_frame)
         legend_frame.grid(row=29, column=0, sticky='ew', pady=(6,12))
         
-        vencido_lbl = tk.Label(legend_frame, text=" Vencido ", bg='#ffe0b2', fg='#b85c00', font=('Segoe UI', 9), relief='solid', borderwidth=1, pady=4)
+        vencido_lbl = tk.Label(legend_frame, text=" Vencido ", bg='#ffb3b3', fg='#b00000', font=('Segoe UI', 9), relief='solid', borderwidth=1, pady=4)
         vencido_lbl.pack(fill='x', pady=3)
-        proximo_lbl = tk.Label(legend_frame, text=" Vence en 2-3 meses ", bg='#ffcccc', fg='#cc0000', font=('Segoe UI', 9), relief='solid', borderwidth=1, pady=4)
+        proximo_lbl = tk.Label(legend_frame, text=" Proximo a vencer ", bg='#cfe5ff', fg='#004a99', font=('Segoe UI', 9), relief='solid', borderwidth=1, pady=4)
         proximo_lbl.pack(fill='x', pady=3)
-        mas_proximo_lbl = tk.Label(legend_frame, text=" Mas proximo (fuera de rango) ", bg='#e8f1ff', fg='#1f4e79', font=('Segoe UI', 9), relief='solid', borderwidth=1, pady=4)
-        mas_proximo_lbl.pack(fill='x', pady=3)
+        estable_lbl = tk.Label(legend_frame, text=" Fecha estable ", bg='#ffffff', fg='#333333', font=('Segoe UI', 9), relief='solid', borderwidth=1, pady=4)
+        estable_lbl.pack(fill='x', pady=3)
         # Limpiar filtros
         ttk.Button(self.control_frame, text="Limpiar filtros", command=self._clear_filters, width=26).grid(row=30, column=0, sticky='ew', pady=(4, 4))
 
@@ -777,18 +802,22 @@ class ValeConsumoApp:
             # Ajustar según si ubicación está visible
             if self.show_ubicacion.get():
                 specs = [
-                    ('Producto',    0.45, 220),
-                    ('Lote',        0.15,  80),
-                    ('Ubicacion',   0.20, 120),
-                    ('Vencimiento', 0.12, 100),
-                    ('Stock',       0.08,  60),
+                    ('Producto',    0.34, 220),
+                    ('Codigo',      0.11,  80),
+                    ('Lote',        0.13,  80),
+                    ('Bodega',      0.11,  90),
+                    ('Ubicacion',   0.14, 120),
+                    ('Vencimiento', 0.10, 100),
+                    ('Stock',       0.07,  60),
                 ]
             else:
                 specs = [
-                    ('Producto',    0.55, 220),
-                    ('Lote',        0.18,  80),
-                    ('Vencimiento', 0.18, 100),
-                    ('Stock',       0.09,  60),
+                    ('Producto',    0.38, 220),
+                    ('Codigo',      0.12,  80),
+                    ('Lote',        0.16,  80),
+                    ('Bodega',      0.14,  90),
+                    ('Vencimiento', 0.12, 100),
+                    ('Stock',       0.08,  60),
                 ]
             for col, frac, minw in specs:
                 if col in tw['columns']:
@@ -801,11 +830,11 @@ class ValeConsumoApp:
         try:
             if self.show_ubicacion.get():
                 # Mostrar columna
-                self.product_tree['displaycolumns'] = ("Producto", "Lote", "Ubicacion", "Vencimiento", "Stock")
+                self.product_tree['displaycolumns'] = ("Producto", "Codigo", "Lote", "Bodega", "Ubicacion", "Vencimiento", "Stock")
                 self.vale_tree['displaycolumns'] = ("Producto", "Lote", "Ubicacion", "Vencimiento", "Cantidad")
             else:
                 # Ocultar columna
-                self.product_tree['displaycolumns'] = ("Producto", "Lote", "Vencimiento", "Stock")
+                self.product_tree['displaycolumns'] = ("Producto", "Codigo", "Lote", "Bodega", "Vencimiento", "Stock")
                 self.vale_tree['displaycolumns'] = ("Producto", "Lote", "Vencimiento", "Cantidad")
             self._autosize_product_columns()
         except Exception:
@@ -874,6 +903,27 @@ class ValeConsumoApp:
             shown += 1
         if shown == 0:
             ttk.Label(frame, text="(sin ubicaciones)").pack(anchor='w')
+
+    def _toggle_ubicaciones_checklist(self) -> None:
+        try:
+            visible = bool(self.ubicacion_checklist_visible.get())
+            self.ubicacion_checklist_visible.set(not visible)
+            if self.ubicacion_checklist_visible.get():
+                if self.ubicacion_search_entry:
+                    self.ubicacion_search_entry.grid()
+                if self.ubicacion_checklist_frame:
+                    self.ubicacion_checklist_frame.grid()
+                if self.ubicacion_toggle_btn:
+                    self.ubicacion_toggle_btn.configure(text="Ocultar")
+            else:
+                if self.ubicacion_search_entry:
+                    self.ubicacion_search_entry.grid_remove()
+                if self.ubicacion_checklist_frame:
+                    self.ubicacion_checklist_frame.grid_remove()
+                if self.ubicacion_toggle_btn:
+                    self.ubicacion_toggle_btn.configure(text="Mostrar")
+        except Exception:
+            pass
 
     def _get_excluded_ubicaciones(self):
         try:
@@ -953,6 +1003,8 @@ class ValeConsumoApp:
         ttk.Button(self.vale_actions_frame, text="Eliminar Producto", command=self.remove_from_vale, width=26).pack(pady=8, fill='x')
         ttk.Button(self.vale_actions_frame, text="Generar e Imprimir Solicitud", command=self.generate_and_print_vale, width=26).pack(pady=8, fill='x')
         ttk.Button(self.vale_actions_frame, text="Limpiar Solicitud", command=self.clear_vale, width=26).pack(pady=8, fill='x')
+
+        self._init_history_tab()
 
     def _init_history_tab(self) -> None:
         self.hist_tab = ttk.Frame(self.vale_notebook)
@@ -1136,9 +1188,17 @@ class ValeConsumoApp:
                 return
             path = os.path.join(self.history_dir, e.get('pdf', ''))
             if os.path.exists(path):
-                os.startfile(path)
+                action(path, str(e.get('pdf', '')))
+            else:
+                messagebox.showwarning("Historial", "No se encontro el PDF en el historial.")
         except Exception as e:
             messagebox.showerror("Abrir PDF", f"No se pudo abrir el PDF: {e}")
+
+    def open_selected_history(self) -> None:
+        def _open(path: str, _name: str) -> None:
+            os.startfile(path)
+
+        self._with_history_selection(_open)
 
     def print_selected_history(self) -> None:
         cur = self.history_tree.focus()
@@ -1155,7 +1215,7 @@ class ValeConsumoApp:
             if os.path.exists(path) and WINDOWS_OS:
                 # Obtener cantidad de copias
                 copias = max(1, int(self.copias_var.get()))
-                print_pdf_windows(path, copies=copias)
+                print_pdf_windows(path, copies=copias, preview=True)
             elif os.path.exists(path):
                 os.startfile(path)
         except Exception as e:
@@ -1404,16 +1464,101 @@ class ValeConsumoApp:
         self._load_inventory(path)
 
     def _load_inventory(self, path: str) -> None:
-        try:
-            df = self.manager.load(path, AREA_FILTER)
-            self.log.info("Inventario cargado desde %s", path)
-        except Exception as e:
-            self.log.exception("No se pudo cargar inventario %s", path)
-            messagebox.showerror('Carga de Inventario', f'No se pudo cargar el archivo:\n{e}')
+        if self._loading_inventory:
             return
-        self.file_label.configure(text=os.path.basename(path))
-        self._populate_subfamilies(df)
-        self.filter_products()
+        self._loading_inventory = True
+        self._open_load_progress()
+
+        def _progress(processed: int, total: Optional[int], message: str) -> None:
+            self._load_queue.put(("progress", processed, total, message))
+
+        def _worker() -> None:
+            try:
+                df = self.manager.load(path, AREA_FILTER, progress_cb=_progress)
+                self._load_queue.put(("done", df))
+            except Exception as e:
+                self._load_queue.put(("error", e))
+
+        threading.Thread(target=_worker, daemon=True).start()
+        self._poll_load_queue(path)
+
+    def _open_load_progress(self) -> None:
+        if self._load_progress and self._load_progress.winfo_exists():
+            return
+        dlg = tk.Toplevel(self.master)
+        dlg.title("Cargando inventario")
+        dlg.geometry("360x120")
+        dlg.resizable(False, False)
+        dlg.transient(self.master)
+        try:
+            dlg.grab_set()
+        except Exception:
+            pass
+        self._load_progress = dlg
+        frm = ttk.Frame(dlg, padding=12)
+        frm.pack(fill='both', expand=True)
+        self._load_progress_label = ttk.Label(frm, text="Cargando archivo...")
+        self._load_progress_label.pack(anchor='w')
+        self._load_progress_bar = ttk.Progressbar(frm, mode='indeterminate')
+        self._load_progress_bar.pack(fill='x', pady=(10, 0))
+        self._load_progress_bar.start(10)
+
+    def _close_load_progress(self) -> None:
+        try:
+            if self._load_progress_bar:
+                self._load_progress_bar.stop()
+        except Exception:
+            pass
+        try:
+            if self._load_progress and self._load_progress.winfo_exists():
+                self._load_progress.destroy()
+        except Exception:
+            pass
+        self._load_progress = None
+        self._load_progress_bar = None
+        self._load_progress_label = None
+
+    def _update_load_progress(self, processed: int, total: Optional[int], message: str) -> None:
+        if not self._load_progress_bar:
+            return
+        if total and total > 0:
+            if str(self._load_progress_bar["mode"]) != "determinate":
+                self._load_progress_bar.stop()
+                self._load_progress_bar.configure(mode="determinate", maximum=total)
+            self._load_progress_bar["value"] = min(processed, total)
+            pct = int((processed / total) * 100) if total else 0
+            label = f"{message} {processed}/{total} ({pct}%)"
+        else:
+            if str(self._load_progress_bar["mode"]) != "indeterminate":
+                self._load_progress_bar.configure(mode="indeterminate")
+                self._load_progress_bar.start(10)
+            label = message
+        if self._load_progress_label:
+            self._load_progress_label.configure(text=label)
+
+    def _poll_load_queue(self, path: str) -> None:
+        try:
+            while True:
+                kind, *payload = self._load_queue.get_nowait()
+                if kind == "progress":
+                    processed, total, message = payload
+                    self._update_load_progress(processed, total, message)
+                elif kind == "done":
+                    df = payload[0]
+                    self._loading_inventory = False
+                    self._close_load_progress()
+                    self.file_label.configure(text=os.path.basename(path))
+                    self._populate_subfamilies(df)
+                elif kind == "error":
+                    err = payload[0]
+                    self._loading_inventory = False
+                    self._close_load_progress()
+                    self.log.exception("No se pudo cargar inventario %s", path)
+                    messagebox.showerror('Carga de Inventario', f'No se pudo cargar el archivo:\n{err}')
+        except queue.Empty:
+            pass
+        if self._loading_inventory:
+            self.master.after(120, lambda: self._poll_load_queue(path))
 
     def _populate_subfamilies(self, df: pd.DataFrame) -> None:
         try:
@@ -1432,8 +1577,9 @@ class ValeConsumoApp:
             self._populate_products(pd.DataFrame())
             self.log.info("Filtros aplicados sin inventario cargado")
             return
+        search_term = self.search_var.get().strip()
         opts = FilterOptions(
-            producto=self.search_var.get().strip(),
+            producto=search_term,
             lote=self.lote_var.get().strip(),
             ubicacion=self.ubi_var.get().strip(),
             venc_desde=self.vdesde_var.get().strip(),
@@ -1450,40 +1596,71 @@ class ValeConsumoApp:
         if excluded and 'Ubicacion' in out.columns:
             excluded_set = {str(x).strip().lower() for x in excluded}
             out = out[~out['Ubicacion'].fillna('').astype(str).str.strip().str.lower().isin(excluded_set)]
+        if search_term:
+            out = self._sort_by_proximidad(out)
         self.filtered_df = out
         self._populate_products(out)
         self.log.info("Filtro aplicado -> %d filas visibles", len(out))
+
+    def _parse_vencimiento_value(self, value):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        try:
+            return value.to_pydatetime().date()
+        except Exception:
+            pass
+        try:
+            num = float(value)
+            if not pd.isna(num):
+                return (datetime(1899, 12, 30) + timedelta(days=num)).date()
+        except Exception:
+            pass
+        venc_str = str(value).strip()
+        if not venc_str:
+            return None
+        for fmt in ['%Y-%m-%d', '%d-%m-%Y', '%d/%m/%Y', '%Y/%m/%d', '%Y-%m-%d %H:%M:%S']:
+            try:
+                return datetime.strptime(venc_str, fmt).date()
+            except Exception:
+                continue
+        return None
+
+    def _sort_by_proximidad(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty or 'Vencimiento' not in df.columns:
+            return df
+        today = datetime.now().date()
+        parsed = df['Vencimiento'].apply(self._parse_vencimiento_value)
+        productos = df['Nombre_del_Producto'].fillna('').astype(str).str.strip().str.lower()
+        earliest_by_producto = {}
+        for prod, venc_date in zip(productos, parsed):
+            if not prod or not venc_date:
+                continue
+            prev = earliest_by_producto.get(prod)
+            if not prev or venc_date < prev:
+                earliest_by_producto[prod] = venc_date
+        proximo_flags = []
+        days_list = []
+        for prod, venc_date in zip(productos, parsed):
+            if prod and venc_date and venc_date == earliest_by_producto.get(prod):
+                proximo_flags.append(1)
+                days_list.append((venc_date - today).days)
+            else:
+                proximo_flags.append(0)
+                days_list.append(999999)
+        out = df.copy()
+        out['_proximo'] = proximo_flags
+        out['_days'] = days_list
+        out['_orig'] = range(len(out))
+        out = out.sort_values(by=['_proximo', '_days', '_orig'], ascending=[False, True, True], kind='mergesort')
+        return out.drop(columns=['_proximo', '_days', '_orig'])
 
     def _populate_products(self, df: pd.DataFrame) -> None:
         for i in self.product_tree.get_children():
             self.product_tree.delete(i)
         if df is None or df.empty:
             return
-        
-        def _parse_vencimiento(value):
-            if value is None:
-                return None
-            if isinstance(value, datetime):
-                return value.date()
-            try:
-                return value.to_pydatetime().date()
-            except Exception:
-                pass
-            try:
-                num = float(value)
-                if not pd.isna(num):
-                    return (datetime(1899, 12, 30) + timedelta(days=num)).date()
-            except Exception:
-                pass
-            venc_str = str(value).strip()
-            if not venc_str:
-                return None
-            for fmt in ['%Y-%m-%d', '%d-%m-%Y', '%d/%m/%Y', '%Y/%m/%d', '%Y-%m-%d %H:%M:%S']:
-                try:
-                    return datetime.strptime(venc_str, fmt).date()
-                except Exception:
-                    continue
-            return None
 
         today = datetime.now().date()
         earliest_by_producto = {}
@@ -1491,7 +1668,7 @@ class ValeConsumoApp:
         for idx, row in df.iterrows():
             producto = str(row.get('Nombre_del_Producto', '')).strip()
             producto_key = producto.lower()
-            venc_date = _parse_vencimiento(row.get('Vencimiento', ''))
+            venc_date = self._parse_vencimiento_value(row.get('Vencimiento', ''))
             parsed_dates[idx] = venc_date
             if producto_key and venc_date:
                 prev = earliest_by_producto.get(producto_key)
@@ -1501,24 +1678,25 @@ class ValeConsumoApp:
         for idx, row in df.iterrows():
             values = [
                 row.get('Nombre_del_Producto', ''),
+                row.get('Codigo', ''),
                 row.get('Lote', ''),
+                row.get('Bodega', ''),
                 row.get('Ubicacion', ''),
                 row.get('Vencimiento', ''),
                 row.get('Stock', ''),
             ]
 
-            # Determinar vencimiento (naranjo vencido, rojo 2-3 meses) solo para el mas proximo por producto
+            # Determinar vencimiento (rojo vencido, azul proximo) solo para el mas proximo por producto
             tags = []
             venc_date = parsed_dates.get(idx)
             producto = str(row.get('Nombre_del_Producto', '')).strip()
             producto_key = producto.lower()
             if producto_key and venc_date and venc_date == earliest_by_producto.get(producto_key):
                 try:
-                    tags.append('vencimiento_mas_proximo')
                     dias_restantes = (venc_date - today).days
                     if dias_restantes < 0:
                         tags.append('vencido')
-                    elif self.days_vencimiento_rojo_min <= dias_restantes <= self.days_vencimiento_rojo_max:
+                    else:
                         tags.append('vencimiento_proximo')
                 except Exception:
                     pass
@@ -1564,11 +1742,11 @@ class ValeConsumoApp:
         """Aplica zebra stripes al Treeview para mejorar legibilidad, respetando tags de vencimiento."""
         try:
             tree.tag_configure('evenrow', background='#ffffff')
-            tree.tag_configure('oddrow', background='#fafafa')
+            tree.tag_configure('oddrow', background='#ffffff')
             for n, iid in enumerate(tree.get_children()):
                 # Verificar si tiene tag de vencimiento
                 current_tags = tree.item(iid, 'tags')
-                if current_tags and ('vencimiento_proximo' in current_tags or 'vencido' in current_tags or 'vencimiento_mas_proximo' in current_tags):
+                if current_tags and ('vencimiento_proximo' in current_tags or 'vencido' in current_tags):
                     # Mantener el tag de vencimiento
                     continue
                 else:
@@ -1833,7 +2011,7 @@ class ValeConsumoApp:
             
             # Impresion directa (sin abrir PDF viewer)
             if WINDOWS_OS:
-                print_pdf_windows(filename, copies=copias)
+                print_pdf_windows(filename, copies=copias, preview=True)
             
             messagebox.showinfo('Solicitud Generada', f'Solicitud N° {padded if number is not None else "N/A"} generada correctamente.\n{copias} copia(s) enviada(s) a la impresora.')
             

@@ -27,6 +27,21 @@ def _para(text: str, style_name: str = "Normal") -> Paragraph:
         return Paragraph(text.replace("&", "&amp;"), st)
     return Paragraph(text.replace("&", "&amp;"), styles[style_name])
 
+def _format_date_ddmmyyyy(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.strftime("%d/%m/%Y")
+    text = str(value).strip()
+    if not text:
+        return ""
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%d/%m/%Y")
+        except Exception:
+            continue
+    return text
+
 
 def _auto_col_widths(rows: Iterable[Iterable[str]], page_width: int, padd: int = 16) -> List[int]:
     # Calcula anchos segun el contenido + padding, y ajusta al ancho disponible
@@ -81,7 +96,7 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
 
     metadata = [
         ["N° Solicitud:", numero_correlativo],
-        ["Fecha de Emision:", emission_time.strftime("%d-%m-%Y")],
+        ["Fecha de Emision:", emission_time.strftime("%d/%m/%Y")],
         ["Hora de Emision:", emission_time.strftime("%H:%M:%S")],
         ["Solicitado por:", solicitante],
         ["Preparado por:", usuario_bodega],
@@ -101,16 +116,18 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
     elements.append(metadata_table)
     elements.append(Spacer(1, 18))
 
-    # Datos de tabla: Producto, Lote, Ubicacion, Vencimiento, Cantidad
-    headers = ["Producto", "Lote", "Ubicacion", "Vencimiento", "Cantidad"]
+    # Datos de tabla: Codigo, Producto, Lote, Ubicacion, Vencimiento, Stock, Cantidad
+    headers = ["Codigo", "Producto", "Lote", "Ubicacion", "Vencimiento", "Stock", "Cantidad"]
     rows = [headers]
     for item in vale_data:
         rows.append(
             [
+                item.get("Codigo", ""),
                 item.get("Producto", ""),
                 item.get("Lote", ""),
                 item.get("Ubicacion", ""),
-                item.get("Vencimiento", ""),
+                _format_date_ddmmyyyy(item.get("Vencimiento", "")),
+                str(item.get("Stock", "")),
                 str(item.get("Cantidad", "")),
             ]
         )
@@ -123,11 +140,13 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
     table_rows = [rows[0]]
     for r in rows[1:]:
         table_rows.append([
-            _para(r[0], "NormalWrap"),  # Producto
-            r[1],                        # Lote
-            _para(r[2], "NormalWrap"),  # Ubicacion
-            r[3],                        # Vencimiento
-            r[4],                        # Cantidad
+            r[0],                        # Codigo
+            _para(r[1], "NormalWrap"),  # Producto
+            r[2],                        # Lote
+            _para(r[3], "NormalWrap"),  # Ubicacion
+            r[4],                        # Vencimiento
+            r[5],                        # Stock
+            r[6],                        # Cantidad
         ])
 
     table = Table(table_rows, colWidths=col_widths)
@@ -137,8 +156,8 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
                 ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
                 ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("ALIGN", (0, 0), (0, -1), "LEFT"),  # Producto
-                ("ALIGN", (2, 0), (2, -1), "LEFT"),  # Ubicacion
+                ("ALIGN", (1, 0), (1, -1), "LEFT"),  # Producto
+                ("ALIGN", (3, 0), (3, -1), "LEFT"),  # Ubicacion
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
                 ("FONTSIZE", (0, 0), (-1, -1), 10),
@@ -201,7 +220,7 @@ def build_unified_vale_pdf(filename: str, rows: List[Dict], emission_time: datet
     elements.append(Spacer(1, 12))
 
     metadata = [
-        ["Fecha de Emision:", emission_time.strftime("%d-%m-%Y")],
+        ["Fecha de Emision:", emission_time.strftime("%d/%m/%Y")],
         ["Hora de Emision:", emission_time.strftime("%H:%M:%S")],
         ["Documentos origen:", str(len({r.get('Origen','') for r in rows if r.get('Origen')}))],
     ]
@@ -223,7 +242,7 @@ def build_unified_vale_pdf(filename: str, rows: List[Dict], emission_time: datet
             r.get("Producto", ""),
             r.get("Lote", ""),
             r.get("Ubicacion", ""),
-            r.get("Vencimiento", ""),
+            _format_date_ddmmyyyy(r.get("Vencimiento", "")),
             str(r.get("Cantidad", "")),
         ])
 

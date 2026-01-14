@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import unicodedata
-from typing import Iterable
+from typing import Iterable, Callable, Optional
 
 import pandas as pd
 
@@ -78,12 +78,75 @@ def _filter_by_area(df: pd.DataFrame, area_name: str) -> pd.DataFrame:
     return df.copy()
 
 
-def load_inventory(file_path: str, area_filter: str | None = None) -> pd.DataFrame:
+def _read_excel_stream(
+    file_path: str,
+    progress_cb: Optional[Callable[[int, Optional[int], str], None]] = None,
+    chunk_size: int = 2000,
+) -> pd.DataFrame:
+    try:
+        import openpyxl  # type: ignore
+    except Exception as exc:
+        raise RuntimeError("openpyxl no disponible para lectura por slots") from exc
+
+    wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+    try:
+        ws = wb.active
+        total_rows = max((ws.max_row or 1) - 1, 0)
+        if progress_cb:
+            progress_cb(0, total_rows, "Leyendo archivo...")
+        rows_iter = ws.iter_rows(values_only=True)
+        headers = next(rows_iter, None)
+        if not headers:
+            return pd.DataFrame()
+        headers = [str(h).strip() if h is not None else "" for h in headers]
+        frames = []
+        batch = []
+        processed = 0
+        for row in rows_iter:
+            row_dict = {headers[i]: row[i] if i < len(row) else None for i in range(len(headers))}
+            batch.append(row_dict)
+            processed += 1
+            if len(batch) >= chunk_size:
+                frames.append(pd.DataFrame(batch))
+                batch = []
+                if progress_cb:
+                    progress_cb(processed, total_rows, "Leyendo archivo...")
+        if batch:
+            frames.append(pd.DataFrame(batch))
+        if progress_cb:
+            progress_cb(total_rows, total_rows, "Procesando datos...")
+        if not frames:
+            return pd.DataFrame(columns=headers)
+        return pd.concat(frames, ignore_index=True)
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+
+
+def load_inventory(
+    file_path: str,
+    area_filter: str | None = None,
+    progress_cb: Optional[Callable[[int, Optional[int], str], None]] = None,
+    chunk_size: int = 2000,
+) -> pd.DataFrame:
     if not os.path.exists(file_path):
         raise FileNotFoundError(file_path)
 
     logger.info("Cargando inventario desde %s", file_path)
-    df = pd.read_excel(file_path)
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext in (".xlsx", ".xlsm", ".xltx", ".xltm"):
+        try:
+            df = _read_excel_stream(file_path, progress_cb=progress_cb, chunk_size=chunk_size)
+        except Exception:
+            if progress_cb:
+                progress_cb(0, None, "Leyendo archivo...")
+            df = pd.read_excel(file_path)
+    else:
+        if progress_cb:
+            progress_cb(0, None, "Leyendo archivo...")
+        df = pd.read_excel(file_path)
     df = _normalize_columns(df)
 
     required = ["Nombre_del_Producto", "Lote", "Fecha_de_Vencimiento", "Cantidad_Disponible"]
