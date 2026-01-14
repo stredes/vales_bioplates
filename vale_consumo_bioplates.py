@@ -42,7 +42,7 @@ MSG_SELECT_PRODUCT = "Seleccione un producto de la tabla."
 class ValeConsumoApp:
     def __init__(self, master: tk.Tk) -> None:
         self.master = master
-        self.master.title(f"Solicitud Productos(Uso Bodega)")
+        self.master.title("Solicitu Prod")
         try:
             self.master.state('zoomed')
         except Exception:

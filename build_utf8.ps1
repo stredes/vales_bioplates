@@ -5,7 +5,7 @@
     [string]$Entry = 'run_app.py',
     [switch]$RecreateVenv,
     # Opciones estilo build.ps1 de referencia
-    [string]$Name = 'ValeConsumoBioplates',
+    [string]$Name = 'SolicituProd',
     [switch]$Console,
     [string]$Icon,
     [switch]$OneDir,
@@ -16,6 +16,7 @@
 )
 
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Set-Location -Path $PSScriptRoot
 
 function Get-PythonPath {
@@ -97,7 +98,7 @@ function Get-CommonPythonPaths {
 function Get-RequirementsPackages {
     param([string]$FilePath)
     if (-not (Test-Path $FilePath)) { return @() }
-    $lines = Get-Content $FilePath | Where-Object { $_ -and -not $_.Trim().StartsWith('#') }
+    $lines = Get-Content -Encoding UTF8 $FilePath | Where-Object { $_ -and -not $_.Trim().StartsWith('#') }
     $packages = @()
     foreach ($line in $lines) {
         $clean = ($line -split '#')[0].Trim()
@@ -129,7 +130,7 @@ function Install-Dependencies {
             'pypdf'       # unificacion de PDFs
         )
         & $Py -m pip install @pkgs
-        if ($IsWindows) {
+        if ($env:OS -eq 'Windows_NT') {
             try { & $Py -m pip install pywin32 } catch { Write-Warning 'pywin32 opcional; continuando.' }
         }
     }
@@ -154,7 +155,12 @@ function Initialize-ToolsAndDeps {
         if ($LASTEXITCODE -ne 0) { & $Py -m pip install -U pyinstaller pyinstaller-hooks-contrib }
         # Dependencias runtime
         & $Py -c "import importlib.util as u,sys;mods=['pandas','reportlab','PIL','openpyxl','xlrd','win32api','win32print','pypdf','PyPDF2'];missing=[m for m in mods if u.find_spec(m) is None];sys.exit(0 if not missing else 1)" | Out-Null
-        if ($LASTEXITCODE -ne 0) { & $Py -m pip install -U pandas reportlab pillow openpyxl xlrd pypdf pywin32 }
+        if ($LASTEXITCODE -ne 0) {
+            & $Py -m pip install -U pandas reportlab pillow openpyxl xlrd pypdf
+            if ($env:OS -eq 'Windows_NT') {
+                try { & $Py -m pip install -U pywin32 } catch { Write-Warning 'pywin32 opcional; continuando.' }
+            }
+        }
     }
     # Verificar PyInstaller
     & $Py -c "import importlib.util as u,sys;sys.exit(0 if u.find_spec('PyInstaller') else 1)" | Out-Null
@@ -173,7 +179,7 @@ function New-AppPackage {
     if (-not $OneDir) { $argsList += @('--onefile') }
     if (-not $NoClean) { $argsList += @('--clean') }
     $argsList += @('--noconfirm')
-    if ($Console) { $argsList += @('--console') } else { $argsList += @('--windowed','--noconsole') }
+    if ($Console) { $argsList += @('--console') } else { $argsList += @('--windowed') }
     if ($Icon -and (Test-Path $Icon)) { $argsList += @('--icon', $Icon) }
     
 # Hidden-imports necesarios
@@ -244,4 +250,3 @@ switch ($Task) {
     }
     default { throw "Tarea desconocida: $Task" }
 }
-
