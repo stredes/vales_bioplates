@@ -95,6 +95,26 @@ class ValeManager:
         logger.debug("Item removido del vale: %s (cantidad %s)", item['Producto'], item['Cantidad'])
         return item
 
+    def update_vale_quantity(self, vale_index: int, new_quantity: int) -> ValeItem:
+        if new_quantity <= 0:
+            raise ValueError("La cantidad debe ser mayor a 0.")
+        item = self.current_vale[vale_index]
+        old_qty = int(item['Cantidad'])
+        if new_quantity == old_qty:
+            return item
+        delta = int(new_quantity) - old_qty
+        stock_index = item['Stock_Original_Index']
+        current_stock = int(self.bioplates_inventory.loc[stock_index, 'Stock'])
+        if delta > 0:
+            if delta > current_stock:
+                raise ValueError(f"No hay suficiente stock. Stock disponible: {current_stock}")
+            self.bioplates_inventory.loc[stock_index, 'Stock'] = current_stock - delta
+        else:
+            self.bioplates_inventory.loc[stock_index, 'Stock'] = current_stock + (-delta)
+        item['Cantidad'] = int(new_quantity)
+        logger.debug("Cantidad actualizada en vale idx=%s de %s a %s", vale_index, old_qty, new_quantity)
+        return item
+
     def clear_vale(self) -> None:
         for it in self.current_vale:
             self._restore_stock(it)
@@ -121,4 +141,3 @@ class ValeManager:
         qty = int(item['Cantidad'])
         current = int(self.bioplates_inventory.loc[stock_index, 'Stock'])
         self.bioplates_inventory.loc[stock_index, 'Stock'] = current + qty
-

@@ -44,6 +44,20 @@ def set_last_inventory_dir(path: str) -> None:
     _save(data)
 
 
+def get_last_inventory_file() -> Optional[str]:
+    data = _load()
+    path = data.get('last_inventory_file')
+    if isinstance(path, str) and path and os.path.exists(path):
+        return path
+    return None
+
+
+def set_last_inventory_file(path: str) -> None:
+    data = _load()
+    data['last_inventory_file'] = path
+    _save(data)
+
+
 # --- Printing preferences ---
 def get_auto_print() -> bool:
     return bool(_load().get('auto_print', False))

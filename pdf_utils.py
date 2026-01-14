@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Dict, Iterable, List
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, letter
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
@@ -73,20 +73,28 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
         vale_data_with_users: Dict con 'solicitante', 'usuario_bodega', 'numero_correlativo' e 'items'
         emission_time: Fecha y hora de emisión
     """
+    footer_height = 90
     doc = SimpleDocTemplate(
         filename,
         pagesize=A4,
         rightMargin=PDF_MARGIN_RIGHT,
         leftMargin=PDF_MARGIN_LEFT,
         topMargin=PDF_MARGIN_TOP,
-        bottomMargin=PDF_MARGIN_BOTTOM,
+        bottomMargin=PDF_MARGIN_BOTTOM + footer_height,
     )
     styles = getSampleStyleSheet()
     elements = []
 
-    title_style = ParagraphStyle("TitleStyle", parent=styles["Title"], fontSize=16, alignment=1)
+    title_style = ParagraphStyle(
+        "TitleStyle",
+        parent=styles["Title"],
+        fontSize=16,
+        alignment=1,
+        textColor=colors.HexColor("#1f2a44"),
+        leading=18,
+    )
     elements.append(Paragraph("<b>SOLICITUD DE PRODUCTOS<br/>(USO BODEGA)</b>", title_style))
-    elements.append(Spacer(1, 12))
+    elements.append(Spacer(1, 14))
 
     # Obtener datos
     solicitante = vale_data_with_users.get('solicitante', '')
@@ -94,27 +102,59 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
     numero_correlativo = vale_data_with_users.get('numero_correlativo', '')
     vale_data = vale_data_with_users.get('items', [])
 
-    metadata = [
-        ["N° Solicitud:", numero_correlativo],
-        ["Fecha de Emision:", emission_time.strftime("%d/%m/%Y")],
-        ["Hora de Emision:", emission_time.strftime("%H:%M:%S")],
-        ["Solicitado por:", solicitante],
-        ["Preparado por:", usuario_bodega],
+    label_style = ParagraphStyle(
+        "MetaLabel",
+        parent=styles["Normal"],
+        fontSize=9,
+        textColor=colors.HexColor("#5a5a5a"),
+        leading=12,
+    )
+    value_style = ParagraphStyle(
+        "MetaValue",
+        parent=styles["Normal"],
+        fontSize=11,
+        textColor=colors.HexColor("#111111"),
+        leading=12,
+    )
+    meta_rows = [
+        [
+            Paragraph("N° Solicitud", label_style),
+            Paragraph("Fecha de Emision", label_style),
+            Paragraph("Hora de Emision", label_style),
+        ],
+        [
+            Paragraph(str(numero_correlativo), value_style),
+            Paragraph(emission_time.strftime("%d/%m/%Y"), value_style),
+            Paragraph(emission_time.strftime("%H:%M:%S"), value_style),
+        ],
+        [
+            Paragraph("Solicitado por", label_style),
+            Paragraph("Preparado por", label_style),
+            "",
+        ],
+        [
+            Paragraph(str(solicitante), value_style),
+            Paragraph(str(usuario_bodega), value_style),
+            "",
+        ],
     ]
 
-    metadata_table = Table(metadata, colWidths=[150, 300])
+    metadata_table = Table(meta_rows, colWidths=[150, 170, 130])
     metadata_table.setStyle(
         TableStyle(
             [
-                ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-                ("FONTSIZE", (0, 0), (-1, -1), 10),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("LINEBELOW", (0, 1), (2, 1), 0.6, colors.HexColor("#e0e0e0")),
+                ("LINEBELOW", (0, 3), (1, 3), 0.6, colors.HexColor("#e0e0e0")),
             ]
         )
     )
     elements.append(metadata_table)
-    elements.append(Spacer(1, 18))
+    elements.append(Spacer(1, 10))
+    elements.append(HRFlowable(width="100%", thickness=0.6, color=colors.lightgrey, spaceBefore=2, spaceAfter=12))
 
     # Datos de tabla: Codigo, Producto, Lote, Ubicacion, Vencimiento, Stock, Cantidad
     headers = ["Codigo", "Producto", "Lote", "Ubicacion", "Vencimiento", "Stock", "Cantidad"]
@@ -153,7 +193,7 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
     table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2f3b52")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
                 ("ALIGN", (0, 0), (-1, -1), "CENTER"),
                 ("ALIGN", (1, 0), (1, -1), "LEFT"),  # Producto
@@ -161,40 +201,71 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
                 ("FONTSIZE", (0, 0), (-1, -1), 10),
-                ("BOTTOMPADDING", (0, 0), (-1, 0), 12),
-                ("BACKGROUND", (0, 1), (-1, -1), colors.beige),
-                ("GRID", (0, 0), (-1, -1), 1, colors.black),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
+                ("TOPPADDING", (0, 0), (-1, 0), 6),
+                ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f7f7f7")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#ffffff"), colors.HexColor("#f1f3f6")]),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#c9c9c9")),
             ]
         )
     )
 
-    elements.append(Paragraph("<b>Detalle de Productos Retirados:</b>", styles["Normal"]))
-    elements.append(Spacer(1, 6))
+    section_style = ParagraphStyle(
+        "SectionTitle",
+        parent=styles["Normal"],
+        fontSize=11,
+        textColor=colors.HexColor("#1f2a44"),
+        spaceAfter=6,
+    )
+    elements.append(Paragraph("<b>Detalle de Productos Retirados</b>", section_style))
+    elements.append(Spacer(1, 4))
     elements.append(table)
-    elements.append(Spacer(1, 48))
+    elements.append(Spacer(1, 18))
 
-    # Línea de firmas
-    signature_data = [["________________________", "________________________"], ["Entregado por:", "Recibido por:"]]
-    signature_table = Table(signature_data, colWidths=[250, 250])
-    signature_table.setStyle(
-        TableStyle(
-            [
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("FONTNAME", (0, 1), (-1, -1), "Helvetica-Bold"),
-                ("TOPPADDING", (0, 0), (-1, 0), 10),
-            ]
+    def _draw_footer(canvas, _doc) -> None:
+        canvas.saveState()
+        page_w, _ = A4
+        left = PDF_MARGIN_LEFT
+        right = page_w - PDF_MARGIN_RIGHT
+
+        footer_top = PDF_MARGIN_BOTTOM + footer_height - 10
+        canvas.setStrokeColor(colors.lightgrey)
+        canvas.setLineWidth(0.6)
+        canvas.line(left, footer_top, right, footer_top)
+
+        line_y = PDF_MARGIN_BOTTOM + 55
+        label_y = line_y - 12
+        line_len = 180
+        left_start = left + 10
+        right_end = right - 10
+        right_start = right_end - line_len
+
+        canvas.setStrokeColor(colors.black)
+        canvas.setLineWidth(0.8)
+        canvas.line(left_start, line_y, left_start + line_len, line_y)
+        canvas.line(right_start, line_y, right_end, line_y)
+
+        canvas.setFont("Helvetica-Bold", 9)
+        canvas.setFillColor(colors.black)
+        canvas.drawCentredString(left_start + (line_len / 2), label_y, "Entregado por")
+        canvas.drawCentredString(right_start + (line_len / 2), label_y, "Recibido por")
+
+        doc_label_y = PDF_MARGIN_BOTTOM + 16
+        canvas.setStrokeColor(colors.grey)
+        canvas.setLineWidth(0.6)
+        canvas.setDash(3, 3)
+        canvas.line(left, doc_label_y + 2, right, doc_label_y + 2)
+        canvas.setDash()
+        canvas.setFont("Helvetica", 9)
+        canvas.setFillColor(colors.grey)
+        canvas.drawCentredString(
+            (left + right) / 2,
+            doc_label_y - 8,
+            "Doc. Asociado: _______________________",
         )
-    )
-    elements.append(signature_table)
-    elements.append(Spacer(1, 24))
+        canvas.restoreState()
 
-    # Línea punteada con "Doc. Asociado"
-    from reportlab.platypus import HRFlowable
-    elements.append(HRFlowable(width="100%", thickness=1, lineCap='round', color=colors.grey, spaceBefore=10, spaceAfter=6, dash=[3, 3]))
-    doc_asociado_style = ParagraphStyle("DocAsociado", parent=styles["Normal"], fontSize=9, alignment=1, textColor=colors.grey)
-    elements.append(Paragraph("Doc. Asociado: _______________________", doc_asociado_style))
-
-    doc.build(elements)
+    doc.build(elements, onFirstPage=_draw_footer, onLaterPages=_draw_footer)
     logger.info("PDF generado correctamente en %s", filename)
 
 

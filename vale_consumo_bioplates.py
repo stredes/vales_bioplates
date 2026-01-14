@@ -17,11 +17,13 @@ import logging
 import queue
 import threading
 import os
+import subprocess
+import sys
 from datetime import datetime, timedelta
 from typing import Optional, Callable
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 import pandas as pd
 
@@ -40,13 +42,14 @@ MSG_SELECT_PRODUCT = "Seleccione un producto de la tabla."
 class ValeConsumoApp:
     def __init__(self, master: tk.Tk) -> None:
         self.master = master
-        self.master.title("Solicitud Productos (Uso Bodega) - Bioplates")
+        self.master.title(f"Solicitud Productos(Uso Bodega)")
         try:
             self.master.state('zoomed')
         except Exception:
             self.master.geometry('1280x800')
 
         self.log = logging.getLogger("vale_consumo_bioplates")
+        self._apply_auto_scaling()
         self._load_queue = queue.Queue()
         self._load_progress = None
         self._load_progress_bar = None
@@ -66,6 +69,10 @@ class ValeConsumoApp:
         self.ubicacion_exclude_vars = {}
         self.ubicacion_exclude_search_var = None
         self.ubicacion_checklist_frame = None
+        self.ubicacion_checklist_canvas = None
+        self.ubicacion_checklist_scroll = None
+        self.ubicacion_checklist_inner = None
+        self.ubicacion_checklist_window = None
         self.ubicacion_checklist_visible = tk.BooleanVar(value=False)
         self.ubicacion_toggle_btn = None
         self.ubicacion_search_entry = None
@@ -77,24 +84,26 @@ class ValeConsumoApp:
                 style.theme_use('clam')
             except Exception:
                 pass
-            try:
-                # 1.15ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ1.25 suele ser cÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³modo para 1080p/2k
-                self.master.tk.call('tk', 'scaling', 1.15)
-            except Exception:
-                pass
 
             # TipografÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â­as y colores base
-            base_font = ('Segoe UI', 10)
+            base_font = ('Segoe UI', 11)
             style.configure('TLabel', font=base_font)
             style.configure('TLabelframe.Label', font=('Segoe UI', 10, 'bold'))
-            style.configure('TButton', font=base_font)
-            style.configure('Treeview', font=base_font, rowheight=24, background='#ffffff', fieldbackground='#ffffff')
-            style.configure('Treeview.Heading', font=('Segoe UI', 10, 'bold'), padding=(6, 4), background='#f0f0f0')
+            style.configure('TButton', font=base_font, padding=(6, 4))
+            style.configure('TEntry', font=base_font)
+            style.configure('TCombobox', font=base_font)
+            style.configure('Treeview', font=base_font, rowheight=28, background='#ffffff', fieldbackground='#ffffff')
+            style.configure('Treeview.Heading', font=('Segoe UI', 10, 'bold'), padding=(8, 6), background='#f0f0f0')
             style.map('Treeview', background=[('selected', '#e1ecff')], foreground=[('selected', '#000000')])
 
             # BotÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n de acciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n acentuado
             style.configure('Accent.TButton', background='#4a90e2', foreground='#ffffff')
             style.map('Accent.TButton', background=[('active', '#3d7fcc'), ('pressed', '#346dac')])
+            style.configure('Small.TLabel', font=('Segoe UI', 10))
+            style.configure('SmallBold.TLabel', font=('Segoe UI', 10, 'bold'))
+            style.configure('Action.TButton', font=('Segoe UI', 10), padding=(6, 3))
+            style.configure('ActionAccent.TButton', font=('Segoe UI', 10), padding=(6, 3), background='#4a90e2', foreground='#ffffff')
+            style.map('ActionAccent.TButton', background=[('active', '#3d7fcc'), ('pressed', '#346dac')])
         except Exception:
             pass
         
@@ -152,10 +161,13 @@ class ValeConsumoApp:
             # Suprimir item seleccionado del vale con tecla Supr
             try:
                 self.vale_tree.bind('<Delete>', lambda e: self.remove_from_vale())
+                self.vale_tree.bind('<Double-1>', lambda e: self.edit_vale_item())
             except Exception:
                 pass
         except Exception:
             pass
+
+        self._restore_last_inventory()
 
     def _build_menu(self) -> None:
         menubar = tk.Menu(self.master)
@@ -187,6 +199,42 @@ class ValeConsumoApp:
         m_help.add_command(label="Instrucciones de uso...", command=self._open_instructions)
         m_help.add_command(label="Atajos de teclado...", command=self._open_shortcuts)
         menubar.add_cascade(label="Ayuda", menu=m_help)
+
+    def _apply_auto_scaling(self) -> None:
+        try:
+            screen_w = float(self.master.winfo_screenwidth())
+            screen_h = float(self.master.winfo_screenheight())
+            base_w, base_h = 1280.0, 800.0
+            scale_by_dim = min(screen_w / base_w, screen_h / base_h)
+            pixels_per_inch = float(self.master.winfo_fpixels('1i'))
+            scale_by_dpi = pixels_per_inch / 72.0
+            scaling = max(scale_by_dim, scale_by_dpi)
+            scaling = max(0.9, min(1.6, scaling))
+            self.master.tk.call('tk', 'scaling', scaling)
+            self.log.info(
+                "Auto scaling aplicado: %.2f (dpi=%.2f, dim=%.2f)",
+                scaling,
+                scale_by_dpi,
+                scale_by_dim,
+            )
+        except Exception:
+            pass
+
+    def _restore_last_inventory(self) -> None:
+        try:
+            path = settings.get_last_inventory_file()
+        except Exception:
+            path = None
+        if not path or not os.path.exists(path):
+            return
+        self.current_file = path
+        try:
+            base_dir = os.path.dirname(path)
+            if base_dir:
+                settings.set_last_inventory_dir(base_dir)
+        except Exception:
+            pass
+        self._load_inventory(path)
 
     def _menu_printer_settings(self) -> None:
         messagebox.showinfo(
@@ -614,7 +662,11 @@ class ValeConsumoApp:
             ('Stock', 'Stock', 80, 'center'),
         )
         for col, text, width, anchor in headers:
-            self.product_tree.heading(col, text=text)
+            self.product_tree.heading(
+                col,
+                text=text,
+                command=lambda c=col: self._sort_treeview(self.product_tree, c),
+            )
             self.product_tree.column(col, width=width, minwidth=max(60, width - 40), anchor=anchor, stretch=True)
 
         self.product_tree.grid(row=0, column=0, sticky='nsew')
@@ -634,7 +686,7 @@ class ValeConsumoApp:
 
     def _init_filter_panel(self, frame: ttk.Frame) -> None:
         # Panel de control con scroll
-        filters_lf = ttk.LabelFrame(frame, text="Filtros y Acciones", padding=0, width=320)  # Aumentado de 260 a 320
+        filters_lf = ttk.LabelFrame(frame, text="Filtros y Acciones", padding=0, width=260)
         filters_lf.grid(row=0, column=1, sticky='ns')
         try:
             filters_lf.grid_propagate(False)
@@ -647,7 +699,7 @@ class ValeConsumoApp:
         filters_vsb.pack(side='right', fill='y')
         filters_canvas.pack(side='left', fill='both', expand=True)
 
-        self.control_frame = ttk.Frame(filters_canvas, padding=14)  # Aumentado padding de 10 a 14
+        self.control_frame = ttk.Frame(filters_canvas, padding=8)
         self._filters_window = filters_canvas.create_window((0, 0), window=self.control_frame, anchor='nw')
 
         def _sync_scroll_region(_: 'tk.Event') -> None:
@@ -699,30 +751,30 @@ class ValeConsumoApp:
         self.quantity_entry = ttk.Entry(self.control_frame, width=12, font=('Segoe UI', 10))  # Aumentado width y agregada fuente
         self.quantity_entry.insert(0, '1')
         self.quantity_entry.grid(row=3, column=0, sticky='w', pady=(0, 8))
-        ttk.Button(self.control_frame, text="Agregar a Solicitud", style='Accent.TButton', command=self.add_to_vale, width=26).grid(row=4, column=0, sticky='ew', pady=(6, 5))
-        ttk.Button(self.control_frame, text="Generar e Imprimir Solicitud", style='Accent.TButton', command=self.generate_and_print_vale, width=26).grid(row=5, column=0, sticky='ew', pady=(2, 10))
+        ttk.Button(self.control_frame, text="Agregar a Solicitud", style='ActionAccent.TButton', command=self.add_to_vale, width=26).grid(row=4, column=0, sticky='ew', pady=(6, 5))
+        ttk.Button(self.control_frame, text="Generar e Imprimir Solicitud", style='ActionAccent.TButton', command=self.generate_and_print_vale, width=26).grid(row=5, column=0, sticky='ew', pady=(2, 10))
 
         # Subfamilia
-        ttk.Label(self.control_frame, text="Subfamilia:", font=('Segoe UI', 10)).grid(row=6, column=0, sticky='w', pady=(4,0))
+        ttk.Label(self.control_frame, text="Subfamilia:", style='Small.TLabel').grid(row=6, column=0, sticky='w', pady=(4,0))
         self.subfam_var = tk.StringVar(value='(Todas)')
         self.subfam_combo = ttk.Combobox(self.control_frame, textvariable=self.subfam_var, state='readonly', width=24, font=('Segoe UI', 10))  # Agregada fuente
         self.subfam_combo.grid(row=7, column=0, sticky='ew', pady=(0, 8))
         self.subfam_combo.bind('<<ComboboxSelected>>', lambda *_: self.filter_products())
 
         # Lote / Ubicacion
-        ttk.Label(self.control_frame, text="Lote:", font=('Segoe UI', 10)).grid(row=8, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Lote:", style='Small.TLabel').grid(row=8, column=0, sticky='w')
         self.lote_var = tk.StringVar()
         ttk.Entry(self.control_frame, textvariable=self.lote_var, width=26, font=('Segoe UI', 10)).grid(row=9, column=0, sticky='ew', pady=(0, 8))
 
-        ttk.Label(self.control_frame, text="Ubicacion:", font=('Segoe UI', 10)).grid(row=10, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Ubicacion:", style='Small.TLabel').grid(row=10, column=0, sticky='w')
         self.ubi_var = tk.StringVar()
         ttk.Entry(self.control_frame, textvariable=self.ubi_var, width=26, font=('Segoe UI', 10)).grid(row=11, column=0, sticky='ew', pady=(0, 8))
 
         # Rango de vencimiento
-        ttk.Label(self.control_frame, text="Vencimiento desde (YYYY-MM-DD):", font=('Segoe UI', 10)).grid(row=12, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Vencimiento desde (YYYY-MM-DD):", style='Small.TLabel').grid(row=12, column=0, sticky='w')
         self.vdesde_var = tk.StringVar()
         ttk.Entry(self.control_frame, textvariable=self.vdesde_var, width=26, font=('Segoe UI', 10)).grid(row=13, column=0, sticky='ew', pady=(0, 8))
-        ttk.Label(self.control_frame, text="Vencimiento hasta (YYYY-MM-DD):", font=('Segoe UI', 10)).grid(row=14, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Vencimiento hasta (YYYY-MM-DD):", style='Small.TLabel').grid(row=14, column=0, sticky='w')
         self.vhasta_var = tk.StringVar()
         ttk.Entry(self.control_frame, textvariable=self.vhasta_var, width=26, font=('Segoe UI', 10)).grid(row=15, column=0, sticky='ew', pady=(0, 8))
 
@@ -733,7 +785,7 @@ class ValeConsumoApp:
         ubic_head = ttk.Frame(self.control_frame)
         ubic_head.grid(row=17, column=0, sticky='ew')
         ubic_head.columnconfigure(0, weight=1)
-        ttk.Label(ubic_head, text="Excluir ubicaciones:", font=('Segoe UI', 10)).grid(row=0, column=0, sticky='w')
+        ttk.Label(ubic_head, text="Excluir ubicaciones:", style='Small.TLabel').grid(row=0, column=0, sticky='w')
         self.ubicacion_toggle_btn = ttk.Button(ubic_head, text="Mostrar", command=self._toggle_ubicaciones_checklist, width=10)
         self.ubicacion_toggle_btn.grid(row=0, column=1, sticky='e')
 
@@ -751,21 +803,21 @@ class ValeConsumoApp:
         ttk.Separator(self.control_frame, orient='horizontal').grid(row=20, column=0, sticky='ew', pady=(8,12))
 
         # Solicitante
-        ttk.Label(self.control_frame, text="Solicitante:", font=('Segoe UI', 10, 'bold')).grid(row=21, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Solicitante:", style='SmallBold.TLabel').grid(row=21, column=0, sticky='w')
         self.solicitante_var = tk.StringVar()
         self.solicitante_combo = ttk.Combobox(self.control_frame, textvariable=self.solicitante_var, width=24, font=('Segoe UI', 10))
         self.solicitante_combo.grid(row=22, column=0, sticky='ew', pady=(0, 8))
         self._refresh_solicitantes_combo()
 
         # Usuario Bodega
-        ttk.Label(self.control_frame, text="Usuario Bodega:", font=('Segoe UI', 10, 'bold')).grid(row=23, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Usuario Bodega:", style='SmallBold.TLabel').grid(row=23, column=0, sticky='w')
         self.usuario_bodega_var = tk.StringVar()
         self.usuario_bodega_combo = ttk.Combobox(self.control_frame, textvariable=self.usuario_bodega_var, width=24, font=('Segoe UI', 10))
         self.usuario_bodega_combo.grid(row=24, column=0, sticky='ew', pady=(0, 8))
         self._refresh_usuarios_combo()
 
         # Cantidad de copias
-        ttk.Label(self.control_frame, text="Copias a imprimir:", font=('Segoe UI', 10, 'bold')).grid(row=25, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Copias a imprimir:", style='SmallBold.TLabel').grid(row=25, column=0, sticky='w')
         self.copias_var = tk.IntVar(value=1)
         copias_spinbox = ttk.Spinbox(self.control_frame, from_=1, to=10, textvariable=self.copias_var, width=12, font=('Segoe UI', 10))
         copias_spinbox.grid(row=26, column=0, sticky='w', pady=(0, 12))
@@ -774,7 +826,7 @@ class ValeConsumoApp:
         ttk.Separator(self.control_frame, orient='horizontal').grid(row=27, column=0, sticky='ew', pady=(8,12))
 
         # Leyenda de vencimiento
-        ttk.Label(self.control_frame, text="Leyenda:", font=('Segoe UI', 10, 'bold')).grid(row=28, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Leyenda:", style='SmallBold.TLabel').grid(row=28, column=0, sticky='w')
         
         legend_frame = ttk.Frame(self.control_frame)
         legend_frame.grid(row=29, column=0, sticky='ew', pady=(6,12))
@@ -885,7 +937,35 @@ class ValeConsumoApp:
         frame = getattr(self, 'ubicacion_checklist_frame', None)
         if not frame:
             return
-        for child in frame.winfo_children():
+        if not self.ubicacion_checklist_canvas:
+            frame.columnconfigure(0, weight=1)
+            self.ubicacion_checklist_canvas = tk.Canvas(frame, height=96, highlightthickness=0)
+            self.ubicacion_checklist_scroll = ttk.Scrollbar(
+                frame, orient='vertical', command=self.ubicacion_checklist_canvas.yview
+            )
+            self.ubicacion_checklist_canvas.configure(yscrollcommand=self.ubicacion_checklist_scroll.set)
+            self.ubicacion_checklist_inner = ttk.Frame(self.ubicacion_checklist_canvas)
+            self.ubicacion_checklist_window = self.ubicacion_checklist_canvas.create_window(
+                (0, 0), window=self.ubicacion_checklist_inner, anchor='nw'
+            )
+
+            def _on_inner_configure(_event):
+                self.ubicacion_checklist_canvas.configure(
+                    scrollregion=self.ubicacion_checklist_canvas.bbox("all")
+                )
+
+            def _on_canvas_configure(event):
+                self.ubicacion_checklist_canvas.itemconfigure(
+                    self.ubicacion_checklist_window, width=event.width
+                )
+
+            self.ubicacion_checklist_inner.bind("<Configure>", _on_inner_configure)
+            self.ubicacion_checklist_canvas.bind("<Configure>", _on_canvas_configure)
+
+            self.ubicacion_checklist_canvas.grid(row=0, column=0, sticky='ew')
+            self.ubicacion_checklist_scroll.grid(row=0, column=1, sticky='ns')
+
+        for child in self.ubicacion_checklist_inner.winfo_children():
             child.destroy()
         ubicaciones = sorted(self.ubicacion_exclude_vars.keys())
         term = ''
@@ -898,11 +978,11 @@ class ValeConsumoApp:
             if term and term not in ubi.lower():
                 continue
             var = self.ubicacion_exclude_vars.get(ubi)
-            cb = ttk.Checkbutton(frame, text=ubi, variable=var, command=self.filter_products)
+            cb = ttk.Checkbutton(self.ubicacion_checklist_inner, text=ubi, variable=var, command=self.filter_products)
             cb.pack(anchor='w')
             shown += 1
         if shown == 0:
-            ttk.Label(frame, text="(sin ubicaciones)").pack(anchor='w')
+            ttk.Label(self.ubicacion_checklist_inner, text="(sin ubicaciones)").pack(anchor='w')
 
     def _toggle_ubicaciones_checklist(self) -> None:
         try:
@@ -989,7 +1069,11 @@ class ValeConsumoApp:
             ('Vencimiento', 'Vencimiento', 130),
             ('Cantidad', 'Cantidad', 100),
         ):
-            self.vale_tree.heading(col, text=text)
+            self.vale_tree.heading(
+                col,
+                text=text,
+                command=lambda c=col: self._sort_treeview(self.vale_tree, c),
+            )
             anchor = 'center' if col != 'Producto' else 'w'
             self.vale_tree.column(col, width=w, anchor=anchor, stretch=True)
 
@@ -1000,9 +1084,10 @@ class ValeConsumoApp:
 
         self.vale_actions_frame = ttk.Frame(self.vale_tab, padding=12)
         self.vale_actions_frame.grid(row=0, column=1, sticky='ns', padx=(8, 0))
-        ttk.Button(self.vale_actions_frame, text="Eliminar Producto", command=self.remove_from_vale, width=26).pack(pady=8, fill='x')
-        ttk.Button(self.vale_actions_frame, text="Generar e Imprimir Solicitud", command=self.generate_and_print_vale, width=26).pack(pady=8, fill='x')
-        ttk.Button(self.vale_actions_frame, text="Limpiar Solicitud", command=self.clear_vale, width=26).pack(pady=8, fill='x')
+        ttk.Button(self.vale_actions_frame, text="Editar Cantidad", command=self.edit_vale_item, width=26, style='Action.TButton').pack(pady=8, fill='x')
+        ttk.Button(self.vale_actions_frame, text="Eliminar Producto", command=self.remove_from_vale, width=26, style='Action.TButton').pack(pady=8, fill='x')
+        ttk.Button(self.vale_actions_frame, text="Generar e Imprimir Solicitud", command=self.generate_and_print_vale, width=26, style='Action.TButton').pack(pady=8, fill='x')
+        ttk.Button(self.vale_actions_frame, text="Limpiar Solicitud", command=self.clear_vale, width=26, style='Action.TButton').pack(pady=8, fill='x')
 
         self._init_history_tab()
 
@@ -1045,11 +1130,14 @@ class ValeConsumoApp:
         self.history_tree = ttk.Treeview(self.history_frame, columns=cols, show='headings', selectmode='extended')
         
         # Hacer headers clicables para ordenar
-        self.history_sort_column = None
-        self.history_sort_reverse = False
+        self._tree_sort_state = {}
         
         for col in cols:
-            self.history_tree.heading(col, text=col, command=lambda c=col: self._sort_history_column(c))
+            self.history_tree.heading(
+                col,
+                text=col,
+                command=lambda c=col: self._sort_treeview(self.history_tree, c),
+            )
         
         self.history_tree.column('Numero', width=80, anchor='center', stretch=False)
         self.history_tree.column('Estado', width=110, anchor='center', stretch=False)
@@ -1139,39 +1227,31 @@ class ValeConsumoApp:
         except Exception:
             pass
 
-    def _sort_history_column(self, col):
-        """Ordena el historial por la columna seleccionada."""
+    def _sort_treeview(self, tree: ttk.Treeview, col: str) -> None:
+        """Ordena dinamicamente por columna (A-Z / Z-A y mayor-menor)."""
         try:
-            # Si es la misma columna, invertir orden
-            if self.history_sort_column == col:
-                self.history_sort_reverse = not self.history_sort_reverse
-            else:
-                self.history_sort_column = col
-                self.history_sort_reverse = False
-            
-            # Obtener todos los items
-            items = [(self.history_tree.set(k, col), k) for k in self.history_tree.get_children('')]
-            
-            # Ordenar
+            items = [(tree.set(k, col), k) for k in tree.get_children('')]
+
+            state_key = (id(tree), col)
+            reverse = bool(self._tree_sort_state.get(state_key, False))
+            self._tree_sort_state[state_key] = not reverse
+
             def sort_key(item):
                 val = item[0]
-                # Intentar convertir a número si es posible
                 try:
                     return int(val)
-                except:
+                except Exception:
                     try:
                         return float(val)
-                    except:
+                    except Exception:
                         return str(val).lower()
-            
-            items.sort(key=sort_key, reverse=self.history_sort_reverse)
-            
-            # Reordenar items en el tree
-            for index, (val, k) in enumerate(items):
-                self.history_tree.move(k, '', index)
-            
-            # Actualizar zebra stripes
-            self._apply_stripes(self.history_tree)
+
+            items.sort(key=sort_key, reverse=reverse)
+
+            for index, (_val, k) in enumerate(items):
+                tree.move(k, '', index)
+
+            self._apply_stripes(tree)
         except Exception:
             pass
 
@@ -1196,7 +1276,7 @@ class ValeConsumoApp:
 
     def open_selected_history(self) -> None:
         def _open(path: str, _name: str) -> None:
-            os.startfile(path)
+            self._open_path(path, title="Abrir PDF")
 
         self._with_history_selection(_open)
 
@@ -1217,7 +1297,7 @@ class ValeConsumoApp:
                 copias = max(1, int(self.copias_var.get()))
                 print_pdf_windows(path, copies=copias, preview=True)
             elif os.path.exists(path):
-                os.startfile(path)
+                self._open_path(path, title="Reimprimir")
         except Exception as e:
             messagebox.showerror("Reimprimir", f"Error al imprimir: {e}")
 
@@ -1329,7 +1409,7 @@ class ValeConsumoApp:
                 build_unified_vale_pdf(out_file, unified_rows, datetime.now())
                 self.refresh_history()
                 try:
-                    os.startfile(out_file)
+                    self._open_path(out_file, title="Unificar")
                 except Exception:
                     pass
                 if missing_json:
@@ -1347,7 +1427,7 @@ class ValeConsumoApp:
             return
         try:
             self.refresh_history()
-            os.startfile(out_file)
+            self._open_path(out_file, title="Unificar")
         except Exception:
             pass
         self.log.info("Vale unificado generado (concat) -> %s", out_file)
@@ -1444,16 +1524,24 @@ class ValeConsumoApp:
 
     # -------- Interacciones --------
     def select_inventory_file(self) -> None:
-        initialdir = settings.get_last_inventory_dir() or os.getcwd()
+        # Prefer last dir; fall back to Downloads if it exists, else cwd.
+        initialdir = settings.get_last_inventory_dir()
+        if not initialdir or not os.path.isdir(initialdir):
+            downloads_dir = os.path.expanduser("~/Downloads")
+            initialdir = downloads_dir if os.path.isdir(downloads_dir) else os.getcwd()
         path = filedialog.askopenfilename(
             title='Seleccionar archivo de inventario',
             initialdir=initialdir,
-            filetypes=[('Excel', '*.xlsx;*.xls')]
+            filetypes=[('Excel', '*.xlsx *.xls'), ('Todos', '*.*')]
         )
         if not path:
             self.log.info("Seleccion de inventario cancelada")
             return
         self.current_file = path
+        try:
+            settings.set_last_inventory_file(path)
+        except Exception:
+            pass
         try:
             base_dir = os.path.dirname(path)
             if base_dir:
@@ -1742,7 +1830,7 @@ class ValeConsumoApp:
         """Aplica zebra stripes al Treeview para mejorar legibilidad, respetando tags de vencimiento."""
         try:
             tree.tag_configure('evenrow', background='#ffffff')
-            tree.tag_configure('oddrow', background='#ffffff')
+            tree.tag_configure('oddrow', background='#f7f7f7')
             for n, iid in enumerate(tree.get_children()):
                 # Verificar si tiene tag de vencimiento
                 current_tags = tree.item(iid, 'tags')
@@ -1787,7 +1875,11 @@ class ValeConsumoApp:
             ('Archivo', 520, 'w', True),
             ('Items', 80, 'center', False),
         ):
-            self.mgr_tree.heading(c, text=c)
+            self.mgr_tree.heading(
+                c,
+                text=c,
+                command=lambda col=c: self._sort_treeview(self.mgr_tree, col),
+            )
             self.mgr_tree.column(c, width=w, anchor=anc, stretch=st)
         self.mgr_tree.grid(row=1, column=0, sticky='nsew')
         vbar = ttk.Scrollbar(frame, orient='vertical', command=self.mgr_tree.yview)
@@ -1897,7 +1989,7 @@ class ValeConsumoApp:
             out = os.path.join(self.history_dir, f'solicitudes_{status.lower()}_{ts}.xlsx')
             df.to_excel(out, index=False)
             try:
-                os.startfile(out)
+                self._open_path(out, title="Exportar")
             except Exception:
                 pass
             messagebox.showinfo('Exportar', f'Listado exportado: {os.path.basename(out)}')
@@ -1916,7 +2008,7 @@ class ValeConsumoApp:
             out = os.path.join(self.history_dir, f'listado_solicitudes_{status.lower()}_{ts}.pdf')
             build_vales_list_pdf(out, title, rows)
             try:
-                os.startfile(out)
+                self._open_path(out, title="Listado")
             except Exception:
                 pass
             messagebox.showinfo('Listado', f'PDF generado: {os.path.basename(out)}')
@@ -1935,6 +2027,34 @@ class ValeConsumoApp:
         except Exception as e:
             self.log.warning("No se pudo remover item: %s", e)
             messagebox.showerror('Eliminar', str(e))
+            return
+        self.update_vale_treeview()
+        self.filter_products()
+
+    def edit_vale_item(self) -> None:
+        sel = self.vale_tree.focus()
+        if not sel or not sel.startswith('val-'):
+            messagebox.showwarning('Solicitud', 'Seleccione un item de la solicitud.')
+            return
+        try:
+            idx = int(sel.split('-')[1])
+            item = self.manager.current_vale[idx]
+            current_qty = int(item.get('Cantidad', 0))
+        except Exception:
+            messagebox.showerror('Editar', 'No se pudo leer el item seleccionado.')
+            return
+        new_qty = simpledialog.askinteger(
+            "Editar Cantidad",
+            "Nueva cantidad:",
+            initialvalue=current_qty,
+            minvalue=1,
+        )
+        if new_qty is None:
+            return
+        try:
+            self.manager.update_vale_quantity(idx, int(new_qty))
+        except Exception as e:
+            messagebox.showerror('Editar', str(e))
             return
         self.update_vale_treeview()
         self.filter_products()
@@ -2048,10 +2168,20 @@ class ValeConsumoApp:
             self.log.exception("No se pudo guardar JSON sidecar para vale %s", timestamp)
 
     def _open_pdf_safe(self, filename: str) -> None:
+        self._open_path(filename, title="Abrir PDF")
+
+    def _open_path(self, path: str, title: str = "Abrir archivo") -> None:
         try:
-            os.startfile(filename)
-        except Exception:
-            self.log.warning("No se pudo abrir PDF para vista previa: %s", filename, exc_info=True)
+            if WINDOWS_OS and hasattr(os, "startfile"):
+                os.startfile(path)
+                return
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            self.log.warning("No se pudo abrir archivo: %s", path, exc_info=True)
+            messagebox.showerror(title, f"No se pudo abrir el archivo: {e}")
 
 
 def run_app() -> None:
@@ -2062,4 +2192,3 @@ def run_app() -> None:
 
 if __name__ == '__main__':
     run_app()
-

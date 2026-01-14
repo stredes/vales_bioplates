@@ -1,149 +1,61 @@
 {
-  "sequence": 18,
+  "sequence": 7,
   "vales": [
     {
       "number": 1,
-      "status": "Pendiente",
-      "created_at": "2025-10-30T11:53:55",
-      "pdf": "Vale_Consumo_Bioplates_20251030_115355.pdf",
-      "json": "",
-      "items_count": 0
+      "status": "Descontado",
+      "created_at": "2026-01-14T17:28:28",
+      "pdf": "solicitud_001_20260114_172825.pdf",
+      "json": "solicitud_001_20260114_172825.json",
+      "items_count": 1
     },
     {
       "number": 2,
-      "status": "Pendiente",
-      "created_at": "2025-10-30T12:04:47",
-      "pdf": "Vale_Consumo_Bioplates_20251030_120447.pdf",
-      "json": "",
-      "items_count": 0
+      "status": "Descontado",
+      "created_at": "2026-01-14T17:52:22",
+      "pdf": "solicitud_002_20260114_175221.pdf",
+      "json": "solicitud_002_20260114_175221.json",
+      "items_count": 4
     },
     {
       "number": 3,
-      "status": "Pendiente",
-      "created_at": "2025-10-30T13:32:33",
-      "pdf": "Vale_Consumo_Bioplates_20251030_133233.pdf",
-      "json": "",
-      "items_count": 0
+      "status": "Descontado",
+      "created_at": "2026-01-14T17:55:00",
+      "pdf": "solicitud_003_20260114_175459.pdf",
+      "json": "solicitud_003_20260114_175459.json",
+      "items_count": 4
     },
     {
       "number": 4,
-      "status": "Pendiente",
-      "created_at": "2025-10-30T13:46:51",
-      "pdf": "Vale_Consumo_Bioplates_20251030_134651.pdf",
-      "json": "",
-      "items_count": 0
+      "status": "Descontado",
+      "created_at": "2026-01-14T17:56:46",
+      "pdf": "solicitud_004_20260114_175644.pdf",
+      "json": "solicitud_004_20260114_175644.json",
+      "items_count": 12
     },
     {
       "number": 5,
-      "status": "Pendiente",
-      "created_at": "2025-10-30T13:59:30",
-      "pdf": "Vale_Consumo_Bioplates_20251030_135930.pdf",
-      "json": "",
-      "items_count": 0
+      "status": "Anulado",
+      "created_at": "2026-01-14T17:57:58",
+      "pdf": "solicitud_005_20260114_175756.pdf",
+      "json": "solicitud_005_20260114_175756.json",
+      "items_count": 2
     },
     {
       "number": 6,
       "status": "Pendiente",
-      "created_at": "2025-10-30T14:00:20",
-      "pdf": "Vale_Consumo_Bioplates_20251030_140020.pdf",
-      "json": "",
-      "items_count": 0
+      "created_at": "2026-01-14T17:58:08",
+      "pdf": "solicitud_006_20260114_175807.pdf",
+      "json": "solicitud_006_20260114_175807.json",
+      "items_count": 7
     },
     {
       "number": 7,
-      "status": "Pendiente",
-      "created_at": "2025-10-30T14:08:40",
-      "pdf": "Vale_Consumo_Bioplates_20251030_140840.pdf",
-      "json": "",
-      "items_count": 0
-    },
-    {
-      "number": 8,
-      "status": "Pendiente",
-      "created_at": "2025-10-30T14:52:23",
-      "pdf": "Vale_Consumo_Bioplates_20251030_145223.pdf",
-      "json": "",
-      "items_count": 0
-    },
-    {
-      "number": 9,
-      "status": "Pendiente",
-      "created_at": "2025-11-12T14:14:47",
-      "pdf": "Vale_Consumo_Bioplates_20251112_141447.pdf",
-      "json": "",
-      "items_count": 0
-    },
-    {
-      "number": 10,
-      "status": "Pendiente",
-      "created_at": "2025-11-12T14:36:44",
-      "pdf": "Vale_Consumo_Bioplates_20251112_143644.pdf",
-      "json": "",
-      "items_count": 0
-    },
-    {
-      "number": 11,
-      "status": "Pendiente",
-      "created_at": "2025-11-12T14:44:02",
-      "pdf": "Vale_Consumo_Bioplates_20251112_144402.pdf",
-      "json": "",
-      "items_count": 0
-    },
-    {
-      "number": 12,
-      "status": "Pendiente",
-      "created_at": "2025-11-12T16:08:01",
-      "pdf": "Vale_Consumo_Bioplates_20251112_160801.pdf",
-      "json": "",
-      "items_count": 0
-    },
-    {
-      "number": 13,
-      "status": "Pendiente",
-      "created_at": "2025-11-13T12:27:20",
-      "pdf": "vale_20251113_122720.pdf",
-      "json": "",
-      "items_count": 0
-    },
-    {
-      "number": 14,
-      "status": "Pendiente",
-      "created_at": "2025-11-13T14:49:09",
-      "pdf": "vale_unificado_20251113_144908.pdf",
-      "json": "",
-      "items_count": 0
-    },
-    {
-      "number": 15,
-      "status": "Pendiente",
-      "created_at": "2025-11-13T15:19:06",
-      "pdf": "vale_20251113_151906.pdf",
-      "json": "",
-      "items_count": 0
-    },
-    {
-      "number": 16,
-      "status": "Pendiente",
-      "created_at": "2025-11-13T15:33:34",
-      "pdf": "vale_unificado_20251113_153334.pdf",
-      "json": "",
-      "items_count": 0
-    },
-    {
-      "number": 17,
-      "status": "Pendiente",
-      "created_at": "2026-01-14T15:15:49",
-      "pdf": "solicitud_017_20260114_151544.pdf",
-      "json": "solicitud_017_20260114_151544.json",
-      "items_count": 1
-    },
-    {
-      "number": 18,
-      "status": "Pendiente",
-      "created_at": "2026-01-14T15:32:23",
-      "pdf": "solicitud_018_20260114_153204.pdf",
-      "json": "solicitud_018_20260114_153204.json",
-      "items_count": 1
+      "status": "Descontado",
+      "created_at": "2026-01-14T17:58:42",
+      "pdf": "solicitud_007_20260114_175841.pdf",
+      "json": "solicitud_007_20260114_175841.json",
+      "items_count": 2
     }
   ]
 }
