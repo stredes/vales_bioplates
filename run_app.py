@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-"""Punto de entrada para la app de Vales de Consumo (Bioplates).
+"""Punto de entrada para la app de Solicitud de Productos (Uso Bodega - Bioplates).
 
 Ejecuta la interfaz Tkinter importando `run_app` desde `vale_consumo_bioplates`.
 

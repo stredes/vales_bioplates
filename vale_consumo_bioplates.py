@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 
 """
-Interfaz de Vales de Consumo (Bioplates) en ASCII seguro (sin emojis) para
+Interfaz de Solicitud de Productos (Uso Bodega - Bioplates) en ASCII seguro (sin emojis) para
 evitar texto corrupto en Windows. Incluye:
 - Filtros a la derecha con scroll
-- Vale en curso con acciones
+- Solicitud en curso con acciones
 - Historial con abrir, reimprimir y unificar varios PDFs
+- Gestión de solicitantes y usuarios de bodega
 - run_app() como punto de entrada
 """
 
@@ -14,8 +15,8 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
-from typing import Callable, Optional
+from datetime import datetime, timedelta
+from typing import Optional
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -27,28 +28,33 @@ from vale_manager import ValeManager
 from filters import FilterOptions
 from printing_utils import print_pdf_windows
 import settings_store as settings
-
-logger = logging.getLogger(__name__)
-
-MSG_SELECT_PRODUCT = 'Seleccione un producto de la tabla.'
-MSG_SELECT_VALE_ITEM = 'Seleccione un item del vale.'
-MSG_SELECT_HISTORY = 'Seleccione un vale del listado.'
-MSG_EMPTY_VALE = 'No hay productos en el vale.'
+from vale_registry import ValeRegistry
+from user_manager import UserManager
 
 
 class ValeConsumoApp:
     def __init__(self, master: tk.Tk) -> None:
         self.master = master
-        self.log = logging.getLogger(self.__class__.__name__)
-        self.master.title("Vale de Consumo - Bioplates")
+        self.master.title("Solicitud Productos (Uso Bodega) - Bioplates")
         try:
             self.master.state('zoomed')
         except Exception:
             self.master.geometry('1280x800')
 
         self.manager = ValeManager()
+        # Carpeta de historial desde ajustes (fallback a config)
+        try:
+            self.history_dir = settings.get_history_dir() or HISTORY_DIR
+        except Exception:
+            self.history_dir = HISTORY_DIR
+        self.registry = ValeRegistry(self.history_dir)
+        self.user_manager = UserManager(self.history_dir)
         self.filtered_df: pd.DataFrame = pd.DataFrame()
         self.current_file: Optional[str] = None
+        self.show_ubicacion = tk.BooleanVar(value=True)  # Control para mostrar/ocultar ubicaciones
+        self.ubicacion_exclude_vars = {}
+        self.ubicacion_exclude_search_var = None
+        self.ubicacion_checklist_frame = None
 
         style = ttk.Style(self.master)
         try:
@@ -58,12 +64,12 @@ class ValeConsumoApp:
             except Exception:
                 pass
             try:
-                # 1.15–1.25 suele ser cómodo para 1080p/2k
+                # 1.15ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ1.25 suele ser cÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³modo para 1080p/2k
                 self.master.tk.call('tk', 'scaling', 1.15)
             except Exception:
                 pass
 
-            # Tipografías y colores base
+            # TipografÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â­as y colores base
             base_font = ('Segoe UI', 10)
             style.configure('TLabel', font=base_font)
             style.configure('TLabelframe.Label', font=('Segoe UI', 10, 'bold'))
@@ -72,11 +78,15 @@ class ValeConsumoApp:
             style.configure('Treeview.Heading', font=('Segoe UI', 10, 'bold'), padding=(6, 4), background='#f0f0f0')
             style.map('Treeview', background=[('selected', '#e1ecff')], foreground=[('selected', '#000000')])
 
-            # Botón de acción acentuado
+            # BotÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n de acciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n acentuado
             style.configure('Accent.TButton', background='#4a90e2', foreground='#ffffff')
             style.map('Accent.TButton', background=[('active', '#3d7fcc'), ('pressed', '#346dac')])
         except Exception:
             pass
+        
+        # Configurar umbrales de vencimiento (dias)
+        self.days_vencimiento_rojo_min = 60
+        self.days_vencimiento_rojo_max = 90
 
         self._build_menu()
 
@@ -90,19 +100,26 @@ class ValeConsumoApp:
         container.columnconfigure(0, weight=1)
 
         # Barra superior: seleccion de archivo + recordatorio
-        topbar = ttk.Frame(container, padding=(8, 6))
-        topbar.grid(row=0, column=0, sticky='ew')
-        topbar.columnconfigure(1, weight=1)
+        self.topbar = ttk.Frame(container, padding=(8, 6))
+        self.topbar.grid(row=0, column=0, sticky='ew')
+        self.topbar.columnconfigure(1, weight=1)
 
-        self.select_btn = ttk.Button(topbar, text="Seleccionar archivo de inventario...", command=self.select_inventory_file)
+        self.select_btn = ttk.Button(self.topbar, text="Seleccionar archivo de inventario...", command=self.select_inventory_file)
         self.select_btn.grid(row=0, column=0, sticky='w', padx=(0, 10))
 
-        self.file_label = ttk.Label(topbar, text="(ningun archivo cargado)")
+        self.file_label = ttk.Label(self.topbar, text="(ningun archivo cargado)")
         self.file_label.grid(row=0, column=1, sticky='w')
+
+        # Acceso rapido a instrucciones
+        try:
+            self.topbar.columnconfigure(2, weight=0)
+            ttk.Button(self.topbar, text="Instrucciones", command=self._open_instructions).grid(row=0, column=2, sticky='e')
+        except Exception:
+            pass
 
         if settings.get_reminder_enabled():
             lbl_txt = settings.get_reminder_text()
-            self.reminder_label = ttk.Label(topbar, text=lbl_txt, foreground="#666666")
+            self.reminder_label = ttk.Label(self.topbar, text=lbl_txt, foreground="#666666")
             self.reminder_label.grid(row=1, column=0, columnspan=2, sticky='w', pady=(4, 0))
         else:
             self.reminder_label = None
@@ -111,6 +128,20 @@ class ValeConsumoApp:
         self._build_products_area(container)
         # Area inferior: Notebook Vale / Historial
         self._build_vale_and_history(container)
+
+        # Atajos de teclado globales
+        try:
+            self.master.bind('<Control-f>', lambda e: self.search_entry.focus_set())
+            self.master.bind('<Control-h>', lambda e: self.vale_notebook.select(self.hist_tab))
+            self.master.bind('<Control-m>', lambda e: self.vale_notebook.select(self.mgr_tab))
+            self.master.bind('<Control-g>', lambda e: self.generate_and_print_vale())
+            # Suprimir item seleccionado del vale con tecla Supr
+            try:
+                self.vale_tree.bind('<Delete>', lambda e: self.remove_from_vale())
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _build_menu(self) -> None:
         menubar = tk.Menu(self.master)
@@ -123,9 +154,25 @@ class ValeConsumoApp:
         menubar.add_cascade(label="Archivo", menu=m_archivo)
 
         m_conf = tk.Menu(menubar, tearoff=0)
+        m_conf.add_command(label="Ajustes...", command=self._open_settings_dialog)
+        m_conf.add_separator()
+        m_conf.add_command(label="Gestionar Solicitantes...", command=self._open_solicitantes_dialog)
+        m_conf.add_command(label="Gestionar Usuarios Bodega...", command=self._open_usuarios_dialog)
+        m_conf.add_separator()
         m_conf.add_command(label="Configuracion de impresora...", command=self._menu_printer_settings)
         m_conf.add_command(label="Herramientas de lectura de label...", command=self._menu_label_tools)
         menubar.add_cascade(label="Configuracion", menu=m_conf)
+
+        # Menu Herramientas
+        m_tools = tk.Menu(menubar, tearoff=0)
+        m_tools.add_command(label="Limpiar base de datos...", command=self._clean_database)
+        menubar.add_cascade(label="Herramientas", menu=m_tools)
+
+        # Menu Ayuda
+        m_help = tk.Menu(menubar, tearoff=0)
+        m_help.add_command(label="Instrucciones de uso...", command=self._open_instructions)
+        m_help.add_command(label="Atajos de teclado...", command=self._open_shortcuts)
+        menubar.add_cascade(label="Ayuda", menu=m_help)
 
     def _menu_printer_settings(self) -> None:
         messagebox.showinfo(
@@ -140,13 +187,397 @@ class ValeConsumoApp:
             "Proximamente: utilidades para probar y configurar el lector de etiquetas."
         )
 
+    def _clean_database(self) -> None:
+        """Limpia la base de datos de solicitudes y elimina todos los archivos del historial."""
+        confirm = messagebox.askyesno(
+            "Limpiar Base de Datos",
+            "¿Está seguro que desea limpiar la base de datos?\n\n"
+            "Esto eliminará:\n"
+            "• Todos los registros de solicitudes del sistema\n"
+            "• TODOS los archivos PDF y JSON del historial\n\n"
+            "La numeración de solicitudes se reiniciará desde 000.",
+            icon='warning'
+        )
+        if not confirm:
+            return
+        
+        # Segunda confirmación para estar seguros
+        confirm2 = messagebox.askyesno(
+            "Confirmar limpieza",
+            "¿Está COMPLETAMENTE SEGURO?\n\n"
+            "Se eliminarán TODOS los archivos del historial.\n"
+            "Esta acción NO se puede deshacer.",
+            icon='warning'
+        )
+        if not confirm2:
+            return
+        
+        try:
+            deleted_files = 0
+            errors = []
+            
+            # Eliminar archivos PDF y JSON del historial
+            if os.path.exists(self.history_dir):
+                for filename in os.listdir(self.history_dir):
+                    filepath = os.path.join(self.history_dir, filename)
+                    # Eliminar solo PDFs y JSONs, no el vales_index.json aún
+                    if filename.lower().endswith(('.pdf', '.json')) and filename != 'vales_index.json':
+                        try:
+                            os.remove(filepath)
+                            deleted_files += 1
+                        except Exception as e:
+                            errors.append(f"{filename}: {e}")
+            
+            # Limpiar el registro
+            self.registry.data = {
+                'sequence': 0,
+                'vales': []
+            }
+            self.registry._save()
+            
+            # Refrescar vistas
+            self.refresh_history()
+            if hasattr(self, 'refresh_manager'):
+                self.refresh_manager()
+            
+            msg = f"Base de datos limpiada exitosamente.\n\n"
+            msg += f"• Archivos eliminados: {deleted_files}\n"
+            msg += f"• La numeración comenzará desde 000"
+            
+            if errors:
+                msg += f"\n\nAdvertencias ({len(errors)} archivos no pudieron eliminarse):\n"
+                msg += "\n".join(errors[:5])  # Mostrar solo los primeros 5 errores
+                if len(errors) > 5:
+                    msg += f"\n... y {len(errors) - 5} más"
+            
+            messagebox.showinfo("Base de Datos Limpiada", msg)
+            
+        except Exception as e:
+            messagebox.showerror(
+                "Error",
+                f"No se pudo limpiar la base de datos:\n{e}"
+            )
+
+    def _open_settings_dialog(self) -> None:
+        dlg = tk.Toplevel(self.master)
+        dlg.title('Ajustes')
+        dlg.transient(self.master)
+        dlg.grab_set()
+        frm = ttk.Frame(dlg, padding=12)
+        frm.grid(row=0, column=0, sticky='nsew')
+        dlg.columnconfigure(0, weight=1)
+        dlg.rowconfigure(0, weight=1)
+
+        # Vars
+        ap_var = tk.BooleanVar(value=settings.get_auto_print())
+        try:
+            from config import SUMATRA_PDF_PATH as CFG_SUM
+        except Exception:
+            CFG_SUM = ''
+        sum_var = tk.StringVar(value=(settings.get_sumatra_path() or CFG_SUM or ''))
+        rem_en_var = tk.BooleanVar(value=settings.get_reminder_enabled())
+        rem_text_var = tk.StringVar(value=settings.get_reminder_text())
+        hist_var = tk.StringVar(value=(settings.get_history_dir()))
+
+        r = 0
+        ttk.Checkbutton(frm, text='Impresion automatica al generar', variable=ap_var).grid(row=r, column=0, columnspan=3, sticky='w')
+        r += 1
+
+        ttk.Label(frm, text='Ruta SumatraPDF.exe (opcional):').grid(row=r, column=0, sticky='w', pady=(8,0))
+        e_sum = ttk.Entry(frm, textvariable=sum_var, width=60)
+        e_sum.grid(row=r, column=1, sticky='ew', padx=(8,6), pady=(8,0))
+        ttk.Button(frm, text='Examinar...', command=lambda: sum_var.set(filedialog.askopenfilename(title='Seleccionar SumatraPDF.exe', filetypes=[('Ejecutable','*.exe')]) or sum_var.get())).grid(row=r, column=2, sticky='w', pady=(8,0))
+        r += 1
+
+        ttk.Checkbutton(frm, text='Mostrar recordatorio superior', variable=rem_en_var).grid(row=r, column=0, columnspan=3, sticky='w', pady=(8,0))
+        r += 1
+        ttk.Label(frm, text='Texto del recordatorio:').grid(row=r, column=0, sticky='w')
+        e_rem = ttk.Entry(frm, textvariable=rem_text_var, width=60)
+        e_rem.grid(row=r, column=1, columnspan=2, sticky='ew', padx=(8,0))
+        r += 1
+
+        ttk.Label(frm, text='Carpeta Historial de vales:').grid(row=r, column=0, sticky='w', pady=(8,0))
+        e_hist = ttk.Entry(frm, textvariable=hist_var, width=60)
+        e_hist.grid(row=r, column=1, sticky='ew', padx=(8,6), pady=(8,0))
+        ttk.Button(frm, text='Seleccionar...', command=lambda: hist_var.set(filedialog.askdirectory(title='Seleccionar carpeta de historial') or hist_var.get())).grid(row=r, column=2, sticky='w', pady=(8,0))
+        r += 1
+
+        for c in range(0,3):
+            frm.columnconfigure(c, weight=(1 if c==1 else 0))
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=r, column=0, columnspan=3, sticky='e', pady=(12,0))
+        def _on_save():
+            try:
+                # Persistir
+                settings.set_auto_print(bool(ap_var.get()))
+                settings.set_sumatra_path(sum_var.get().strip())
+                settings.set_reminder_enabled(bool(rem_en_var.get()))
+                settings.set_reminder_text(rem_text_var.get())
+                new_hist = hist_var.get().strip()
+                if new_hist:
+                    settings.set_history_dir(new_hist)
+                # Aplicar en runtime
+                try:
+                    import config as _cfg
+                    _cfg.SUMATRA_PDF_PATH = sum_var.get().strip()
+                except Exception:
+                    pass
+                # Recordatorio en UI
+                try:
+                    if rem_en_var.get():
+                        if not self.reminder_label:
+                            self.reminder_label = ttk.Label(self.topbar, text=rem_text_var.get(), foreground="#666666")
+                            self.reminder_label.grid(row=1, column=0, columnspan=2, sticky='w', pady=(4, 0))
+                        else:
+                            self.reminder_label.configure(text=rem_text_var.get())
+                    else:
+                        if self.reminder_label:
+                            self.reminder_label.destroy()
+                            self.reminder_label = None
+                except Exception:
+                    pass
+                # Historial (reubicar si cambio)
+                try:
+                    new_dir = settings.get_history_dir()
+                    if new_dir and new_dir != getattr(self, 'history_dir', None):
+                        self.history_dir = new_dir
+                        os.makedirs(self.history_dir, exist_ok=True)
+                        self.registry = ValeRegistry(self.history_dir)
+                    self.refresh_history()
+                    try:
+                        self.refresh_manager()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            finally:
+                dlg.destroy()
+
+        ttk.Button(btns, text='Guardar', command=_on_save).pack(side='right')
+        ttk.Button(btns, text='Cancelar', command=dlg.destroy).pack(side='right', padx=(0,8))
+
+    def _open_solicitantes_dialog(self) -> None:
+        """Abre diálogo para gestionar solicitantes."""
+        dlg = tk.Toplevel(self.master)
+        dlg.title('Gestionar Solicitantes')
+        dlg.geometry('400x500')
+        dlg.transient(self.master)
+        dlg.grab_set()
+        
+        frm = ttk.Frame(dlg, padding=12)
+        frm.pack(fill='both', expand=True)
+        frm.columnconfigure(0, weight=1)
+        frm.rowconfigure(1, weight=1)
+        
+        ttk.Label(frm, text='Solicitantes registrados:', font=('Segoe UI', 10, 'bold')).grid(row=0, column=0, sticky='w', pady=(0,6))
+        
+        listbox_frame = ttk.Frame(frm)
+        listbox_frame.grid(row=1, column=0, sticky='nsew', pady=(0,10))
+        listbox_frame.columnconfigure(0, weight=1)
+        listbox_frame.rowconfigure(0, weight=1)
+        
+        listbox = tk.Listbox(listbox_frame, height=15)
+        listbox.grid(row=0, column=0, sticky='nsew')
+        scroll = ttk.Scrollbar(listbox_frame, orient='vertical', command=listbox.yview)
+        scroll.grid(row=0, column=1, sticky='ns')
+        listbox.configure(yscrollcommand=scroll.set)
+        
+        def refresh_list():
+            listbox.delete(0, tk.END)
+            for s in self.user_manager.get_solicitantes():
+                listbox.insert(tk.END, s)
+        
+        refresh_list()
+        
+        input_frame = ttk.Frame(frm)
+        input_frame.grid(row=2, column=0, sticky='ew', pady=(0,10))
+        input_frame.columnconfigure(1, weight=1)
+        
+        ttk.Label(input_frame, text='Nombre:').grid(row=0, column=0, sticky='w', padx=(0,6))
+        nombre_var = tk.StringVar()
+        nombre_entry = ttk.Entry(input_frame, textvariable=nombre_var)
+        nombre_entry.grid(row=0, column=1, sticky='ew')
+        
+        def add_solicitante():
+            nombre = nombre_var.get().strip()
+            if not nombre:
+                messagebox.showwarning('Agregar Solicitante', 'Ingrese un nombre.')
+                return
+            try:
+                if self.user_manager.add_solicitante(nombre):
+                    refresh_list()
+                    nombre_var.set('')
+                    self._refresh_solicitantes_combo()  # Sincronizar combobox
+                else:
+                    messagebox.showinfo('Agregar Solicitante', 'Este solicitante ya existe.')
+            except Exception as e:
+                messagebox.showerror('Error', str(e))
+        
+        def remove_solicitante():
+            sel = listbox.curselection()
+            if not sel:
+                messagebox.showwarning('Eliminar', 'Seleccione un solicitante.')
+                return
+            nombre = listbox.get(sel[0])
+            if messagebox.askyesno('Confirmar', f'¿Eliminar a "{nombre}"?'):
+                self.user_manager.remove_solicitante(nombre)
+                refresh_list()
+                self._refresh_solicitantes_combo()  # Sincronizar combobox
+        
+        btn_frame = ttk.Frame(frm)
+        btn_frame.grid(row=3, column=0, sticky='ew')
+        ttk.Button(btn_frame, text='Agregar', command=add_solicitante).pack(side='left', padx=(0,6))
+        ttk.Button(btn_frame, text='Eliminar Seleccionado', command=remove_solicitante).pack(side='left')
+        ttk.Button(btn_frame, text='Cerrar', command=dlg.destroy).pack(side='right')
+    
+    def _open_usuarios_dialog(self) -> None:
+        """Abre diálogo para gestionar usuarios de bodega."""
+        dlg = tk.Toplevel(self.master)
+        dlg.title('Gestionar Usuarios Bodega')
+        dlg.geometry('400x500')
+        dlg.transient(self.master)
+        dlg.grab_set()
+        
+        frm = ttk.Frame(dlg, padding=12)
+        frm.pack(fill='both', expand=True)
+        frm.columnconfigure(0, weight=1)
+        frm.rowconfigure(1, weight=1)
+        
+        ttk.Label(frm, text='Usuarios de bodega registrados:', font=('Segoe UI', 10, 'bold')).grid(row=0, column=0, sticky='w', pady=(0,6))
+        
+        listbox_frame = ttk.Frame(frm)
+        listbox_frame.grid(row=1, column=0, sticky='nsew', pady=(0,10))
+        listbox_frame.columnconfigure(0, weight=1)
+        listbox_frame.rowconfigure(0, weight=1)
+        
+        listbox = tk.Listbox(listbox_frame, height=15)
+        listbox.grid(row=0, column=0, sticky='nsew')
+        scroll = ttk.Scrollbar(listbox_frame, orient='vertical', command=listbox.yview)
+        scroll.grid(row=0, column=1, sticky='ns')
+        listbox.configure(yscrollcommand=scroll.set)
+        
+        def refresh_list():
+            listbox.delete(0, tk.END)
+            for u in self.user_manager.get_usuarios_bodega():
+                listbox.insert(tk.END, u)
+        
+        refresh_list()
+        
+        input_frame = ttk.Frame(frm)
+        input_frame.grid(row=2, column=0, sticky='ew', pady=(0,10))
+        input_frame.columnconfigure(1, weight=1)
+        
+        ttk.Label(input_frame, text='Nombre:').grid(row=0, column=0, sticky='w', padx=(0,6))
+        nombre_var = tk.StringVar()
+        nombre_entry = ttk.Entry(input_frame, textvariable=nombre_var)
+        nombre_entry.grid(row=0, column=1, sticky='ew')
+        
+        def add_usuario():
+            nombre = nombre_var.get().strip()
+            if not nombre:
+                messagebox.showwarning('Agregar Usuario', 'Ingrese un nombre.')
+                return
+            try:
+                if self.user_manager.add_usuario_bodega(nombre):
+                    refresh_list()
+                    nombre_var.set('')
+                    self._refresh_usuarios_combo()  # Sincronizar combobox
+                else:
+                    messagebox.showinfo('Agregar Usuario', 'Este usuario ya existe.')
+            except Exception as e:
+                messagebox.showerror('Error', str(e))
+        
+        def remove_usuario():
+            sel = listbox.curselection()
+            if not sel:
+                messagebox.showwarning('Eliminar', 'Seleccione un usuario.')
+                return
+            nombre = listbox.get(sel[0])
+            if messagebox.askyesno('Confirmar', f'¿Eliminar a "{nombre}"?'):
+                self.user_manager.remove_usuario_bodega(nombre)
+                refresh_list()
+                self._refresh_usuarios_combo()  # Sincronizar combobox
+        
+        btn_frame = ttk.Frame(frm)
+        btn_frame.grid(row=3, column=0, sticky='ew')
+        ttk.Button(btn_frame, text='Agregar', command=add_usuario).pack(side='left', padx=(0,6))
+        ttk.Button(btn_frame, text='Eliminar Seleccionado', command=remove_usuario).pack(side='left')
+        ttk.Button(btn_frame, text='Cerrar', command=dlg.destroy).pack(side='right')
+
+    # --- Ayuda / Instrucciones ---
+    def _open_instructions(self) -> None:
+        text = None
+        # Buscar instrucciones.txt en carpeta del script o cwd; fallback a texto embebido
+        try:
+            here = os.path.dirname(os.path.abspath(__file__))
+            candidates = [
+                os.path.join(here, 'instrucciones.txt'),
+                os.path.join(os.getcwd(), 'instrucciones.txt')
+            ]
+            for p in candidates:
+                if os.path.exists(p):
+                    with open(p, 'r', encoding='utf-8') as f:
+                        text = f.read()
+                        break
+        except Exception:
+            text = None
+        if not text:
+            text = (
+                "Uso basico:\n\n"
+                "1) Seleccione el archivo de inventario (Excel).\n"
+                "2) Aplique filtros (producto, subfamilia, lote, ubicacion, fechas).\n"
+                "3) Seleccione Solicitante y Usuario de Bodega.\n"
+                "4) Ingrese cantidad y pulse 'Agregar a Solicitud'.\n"
+                "5) Pulse 'Generar e Imprimir Solicitud' para crear el PDF e imprimir.\n\n"
+                "Historial y Manager:\n"
+                "- En Historial: abrir (doble clic), reimprimir y unificar varias solicitudes.\n"
+                "- Ordene columnas haciendo clic en los encabezados.\n"
+                "- En Manager: cambiar estados (Pendiente/Descontado/Anulado) y exportar listados.\n\n"
+                "Ajustes:\n"
+                "- Gestione solicitantes y usuarios de bodega desde el menu Configuracion.\n"
+                "- Configure cantidad de copias a imprimir.\n"
+                "- Excluya ubicaciones desde el checklist.\n"
+            )
+        dlg = tk.Toplevel(self.master)
+        dlg.title('Instrucciones de uso')
+        dlg.geometry('820x520')
+        dlg.transient(self.master)
+        dlg.grab_set()
+        frm = ttk.Frame(dlg, padding=10)
+        frm.pack(fill='both', expand=True)
+        txt = tk.Text(frm, wrap='word')
+        ysb = ttk.Scrollbar(frm, orient='vertical', command=txt.yview)
+        txt.configure(yscrollcommand=ysb.set)
+        txt.pack(side='left', fill='both', expand=True)
+        ysb.pack(side='right', fill='y')
+        try:
+            txt.insert('1.0', text)
+        except Exception:
+            txt.insert('1.0', 'No se pudieron cargar las instrucciones.')
+        txt.configure(state='disabled')
+
+    def _open_shortcuts(self) -> None:
+        info = (
+            "Atajos de teclado:\n\n"
+            "Ctrl+F : Enfocar busqueda de productos\n"
+            "Ctrl+H : Ir a pestaña Historial\n"
+            "Ctrl+M : Ir a pestaña Manager Solicitudes\n"
+            "Ctrl+G : Generar e Imprimir Solicitud\n"
+            "Supr   : Eliminar item seleccionado de la solicitud\n"
+        )
+        messagebox.showinfo('Atajos de teclado', info)
+
     # -------- Productos y filtros --------
     def _build_products_area(self, parent: ttk.Frame) -> None:
         frame = ttk.Frame(parent, padding=(8, 0))
         frame.grid(row=1, column=0, sticky='nsew')
+        frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
 
-        frame.rowconfigure(0, weight=1)
+        # Tabla a la izquierda
+        table_frame = ttk.Frame(frame)
+        table_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 8))
         frame.columnconfigure(0, weight=1)
 
         table_frame = ttk.Frame(frame)
@@ -182,9 +613,14 @@ class ValeConsumoApp:
         hsb.grid(row=1, column=0, sticky='ew')
         self.product_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         self.product_tree.bind('<Configure>', self._autosize_product_columns)
+        
+        # Configurar tags de color para vencimiento
+        self.product_tree.tag_configure('vencimiento_proximo', background='#ffcccc', foreground='#cc0000')  # Rojo: por vencer
+        self.product_tree.tag_configure('vencido', background='#ffe0b2', foreground='#b85c00')  # Naranjo: vencido
+        self.product_tree.tag_configure('vencimiento_mas_proximo', background='#e8f1ff', foreground='#1f4e79')  # Azul: mas proximo
 
-    def _init_filter_panel(self, parent: ttk.Frame) -> None:
-        filters_lf = ttk.LabelFrame(parent, text="Filtros y Acciones", padding=0, width=260)
+        # Panel de control con scroll
+        filters_lf = ttk.LabelFrame(frame, text="Filtros y Acciones", padding=0, width=320)  # Aumentado de 260 a 320
         filters_lf.grid(row=0, column=1, sticky='ns')
         try:
             filters_lf.grid_propagate(False)
@@ -197,7 +633,7 @@ class ValeConsumoApp:
         filters_vsb.pack(side='right', fill='y')
         filters_canvas.pack(side='left', fill='both', expand=True)
 
-        self.control_frame = ttk.Frame(filters_canvas, padding=10)
+        self.control_frame = ttk.Frame(filters_canvas, padding=14)  # Aumentado padding de 10 a 14
         self._filters_window = filters_canvas.create_window((0, 0), window=self.control_frame, anchor='nw')
 
         def _sync_scroll_region(_: 'tk.Event') -> None:
@@ -236,68 +672,98 @@ class ValeConsumoApp:
 
         canvas.bind_all('<MouseWheel>', _on_mousewheel)
 
-    def _build_filter_controls(self) -> None:
-        ttk.Label(self.control_frame, text="Buscar producto:").grid(row=0, column=0, sticky='w', pady=(0, 2))
+        # Buscar
+        ttk.Label(self.control_frame, text="Buscar producto:", font=('Segoe UI', 10)).grid(row=0, column=0, sticky='w', pady=(0, 4))
         self.search_var = tk.StringVar()
-        self.search_entry = ttk.Entry(self.control_frame, textvariable=self.search_var, width=28)
-        self.search_entry.grid(row=1, column=0, sticky='ew', pady=(0, 6))
+        self.search_entry = ttk.Entry(self.control_frame, textvariable=self.search_var, width=26, font=('Segoe UI', 10))  # Agregada fuente
+        self.search_entry.grid(row=1, column=0, sticky='ew', pady=(0, 8))
         self.search_var.trace_add('write', lambda *_: self.filter_products())
 
-        ttk.Label(self.control_frame, text="Cantidad a retirar:").grid(row=2, column=0, sticky='w')
-        self.quantity_entry = ttk.Entry(self.control_frame, width=10)
+        # Cantidad y acciones
+        ttk.Label(self.control_frame, text="Cantidad a retirar:", font=('Segoe UI', 10)).grid(row=2, column=0, sticky='w')
+        self.quantity_entry = ttk.Entry(self.control_frame, width=12, font=('Segoe UI', 10))  # Aumentado width y agregada fuente
         self.quantity_entry.insert(0, '1')
-        self.quantity_entry.grid(row=3, column=0, sticky='w', pady=(0, 6))
-        ttk.Button(
-            self.control_frame,
-            text="Agregar al Vale",
-            style='Accent.TButton',
-            command=self.add_to_vale,
-            width=26,
-        ).grid(row=4, column=0, sticky='ew', pady=(4, 4))
-        ttk.Button(
-            self.control_frame,
-            text="Generar e Imprimir Vale",
-            style='Accent.TButton',
-            command=self.generate_and_print_vale,
-            width=26,
-        ).grid(row=5, column=0, sticky='ew', pady=(2, 8))
+        self.quantity_entry.grid(row=3, column=0, sticky='w', pady=(0, 8))
+        ttk.Button(self.control_frame, text="Agregar a Solicitud", style='Accent.TButton', command=self.add_to_vale, width=26).grid(row=4, column=0, sticky='ew', pady=(6, 5))
+        ttk.Button(self.control_frame, text="Generar e Imprimir Solicitud", style='Accent.TButton', command=self.generate_and_print_vale, width=26).grid(row=5, column=0, sticky='ew', pady=(2, 10))
 
-        ttk.Label(self.control_frame, text="Subfamilia:").grid(row=6, column=0, sticky='w')
+        # Subfamilia
+        ttk.Label(self.control_frame, text="Subfamilia:", font=('Segoe UI', 10)).grid(row=6, column=0, sticky='w', pady=(4,0))
         self.subfam_var = tk.StringVar(value='(Todas)')
-        self.subfam_combo = ttk.Combobox(self.control_frame, textvariable=self.subfam_var, state='readonly', width=26)
-        self.subfam_combo.grid(row=7, column=0, sticky='ew', pady=(0, 6))
+        self.subfam_combo = ttk.Combobox(self.control_frame, textvariable=self.subfam_var, state='readonly', width=24, font=('Segoe UI', 10))  # Agregada fuente
+        self.subfam_combo.grid(row=7, column=0, sticky='ew', pady=(0, 8))
         self.subfam_combo.bind('<<ComboboxSelected>>', lambda *_: self.filter_products())
 
-        ttk.Label(self.control_frame, text="Lote:").grid(row=8, column=0, sticky='w')
+        # Lote / Ubicacion
+        ttk.Label(self.control_frame, text="Lote:", font=('Segoe UI', 10)).grid(row=8, column=0, sticky='w')
         self.lote_var = tk.StringVar()
-        ttk.Entry(self.control_frame, textvariable=self.lote_var, width=28).grid(row=9, column=0, sticky='ew', pady=(0, 6))
+        ttk.Entry(self.control_frame, textvariable=self.lote_var, width=26, font=('Segoe UI', 10)).grid(row=9, column=0, sticky='ew', pady=(0, 8))
 
-        ttk.Label(self.control_frame, text="Ubicacion:").grid(row=10, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Ubicacion:", font=('Segoe UI', 10)).grid(row=10, column=0, sticky='w')
         self.ubi_var = tk.StringVar()
-        ttk.Entry(self.control_frame, textvariable=self.ubi_var, width=28).grid(row=11, column=0, sticky='ew', pady=(0, 6))
+        ttk.Entry(self.control_frame, textvariable=self.ubi_var, width=26, font=('Segoe UI', 10)).grid(row=11, column=0, sticky='ew', pady=(0, 8))
 
-        ttk.Label(self.control_frame, text="Vencimiento desde (YYYY-MM-DD):").grid(row=12, column=0, sticky='w')
+        # Rango de vencimiento
+        ttk.Label(self.control_frame, text="Vencimiento desde (YYYY-MM-DD):", font=('Segoe UI', 10)).grid(row=12, column=0, sticky='w')
         self.vdesde_var = tk.StringVar()
-        ttk.Entry(self.control_frame, textvariable=self.vdesde_var, width=28).grid(row=13, column=0, sticky='ew', pady=(0, 6))
-        ttk.Label(self.control_frame, text="Vencimiento hasta (YYYY-MM-DD):").grid(row=14, column=0, sticky='w')
+        ttk.Entry(self.control_frame, textvariable=self.vdesde_var, width=26, font=('Segoe UI', 10)).grid(row=13, column=0, sticky='ew', pady=(0, 8))
+        ttk.Label(self.control_frame, text="Vencimiento hasta (YYYY-MM-DD):", font=('Segoe UI', 10)).grid(row=14, column=0, sticky='w')
         self.vhasta_var = tk.StringVar()
-        ttk.Entry(self.control_frame, textvariable=self.vhasta_var, width=28).grid(row=15, column=0, sticky='ew', pady=(0, 6))
+        ttk.Entry(self.control_frame, textvariable=self.vhasta_var, width=26, font=('Segoe UI', 10)).grid(row=15, column=0, sticky='ew', pady=(0, 8))
 
         self.stock_only_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            self.control_frame,
-            text='Solo con stock',
-            variable=self.stock_only_var,
-            command=self.filter_products,
-        ).grid(row=16, column=0, sticky='w', pady=(4, 10))
+        ttk.Checkbutton(self.control_frame, text='Solo con stock', variable=self.stock_only_var, command=self.filter_products).grid(row=16, column=0, sticky='w', pady=(6, 8))
 
-        ttk.Button(self.control_frame, text="Limpiar filtros", command=self._clear_filters, width=26).grid(
-            row=17,
-            column=0,
-            sticky='ew',
-            pady=(2, 2),
-        )
-        for i in range(0, 18):
+        # Excluir ubicaciones
+        ttk.Label(self.control_frame, text="Excluir ubicaciones:", font=('Segoe UI', 10)).grid(row=17, column=0, sticky='w')
+        self.ubicacion_exclude_search_var = tk.StringVar()
+        self.ubicacion_exclude_search_var.trace_add('write', lambda *_: self._render_ubicaciones_checklist())
+        ttk.Entry(self.control_frame, textvariable=self.ubicacion_exclude_search_var, width=26, font=('Segoe UI', 10)).grid(row=18, column=0, sticky='ew', pady=(0, 6))
+        self.ubicacion_checklist_frame = ttk.Frame(self.control_frame)
+        self.ubicacion_checklist_frame.grid(row=19, column=0, sticky='ew', pady=(0, 12))
+
+        # Separador
+        ttk.Separator(self.control_frame, orient='horizontal').grid(row=20, column=0, sticky='ew', pady=(8,12))
+
+        # Solicitante
+        ttk.Label(self.control_frame, text="Solicitante:", font=('Segoe UI', 10, 'bold')).grid(row=21, column=0, sticky='w')
+        self.solicitante_var = tk.StringVar()
+        self.solicitante_combo = ttk.Combobox(self.control_frame, textvariable=self.solicitante_var, width=24, font=('Segoe UI', 10))
+        self.solicitante_combo.grid(row=22, column=0, sticky='ew', pady=(0, 8))
+        self._refresh_solicitantes_combo()
+
+        # Usuario Bodega
+        ttk.Label(self.control_frame, text="Usuario Bodega:", font=('Segoe UI', 10, 'bold')).grid(row=23, column=0, sticky='w')
+        self.usuario_bodega_var = tk.StringVar()
+        self.usuario_bodega_combo = ttk.Combobox(self.control_frame, textvariable=self.usuario_bodega_var, width=24, font=('Segoe UI', 10))
+        self.usuario_bodega_combo.grid(row=24, column=0, sticky='ew', pady=(0, 8))
+        self._refresh_usuarios_combo()
+
+        # Cantidad de copias
+        ttk.Label(self.control_frame, text="Copias a imprimir:", font=('Segoe UI', 10, 'bold')).grid(row=25, column=0, sticky='w')
+        self.copias_var = tk.IntVar(value=1)
+        copias_spinbox = ttk.Spinbox(self.control_frame, from_=1, to=10, textvariable=self.copias_var, width=12, font=('Segoe UI', 10))
+        copias_spinbox.grid(row=26, column=0, sticky='w', pady=(0, 12))
+
+        # Separador
+        ttk.Separator(self.control_frame, orient='horizontal').grid(row=27, column=0, sticky='ew', pady=(8,12))
+
+        # Leyenda de vencimiento
+        ttk.Label(self.control_frame, text="Leyenda:", font=('Segoe UI', 10, 'bold')).grid(row=28, column=0, sticky='w')
+        
+        legend_frame = ttk.Frame(self.control_frame)
+        legend_frame.grid(row=29, column=0, sticky='ew', pady=(6,12))
+        
+        vencido_lbl = tk.Label(legend_frame, text=" Vencido ", bg='#ffe0b2', fg='#b85c00', font=('Segoe UI', 9), relief='solid', borderwidth=1, pady=4)
+        vencido_lbl.pack(fill='x', pady=3)
+        proximo_lbl = tk.Label(legend_frame, text=" Vence en 2-3 meses ", bg='#ffcccc', fg='#cc0000', font=('Segoe UI', 9), relief='solid', borderwidth=1, pady=4)
+        proximo_lbl.pack(fill='x', pady=3)
+        mas_proximo_lbl = tk.Label(legend_frame, text=" Mas proximo (fuera de rango) ", bg='#e8f1ff', fg='#1f4e79', font=('Segoe UI', 9), relief='solid', borderwidth=1, pady=4)
+        mas_proximo_lbl.pack(fill='x', pady=3)
+        # Limpiar filtros
+        ttk.Button(self.control_frame, text="Limpiar filtros", command=self._clear_filters, width=26).grid(row=30, column=0, sticky='ew', pady=(4, 4))
+
+        for i in range(0, 31):
             self.control_frame.rowconfigure(i, weight=0)
         self.control_frame.columnconfigure(0, weight=1)
 
@@ -308,17 +774,120 @@ class ValeConsumoApp:
             width = tw.winfo_width()
             if not width or width < 300:
                 return
-            specs = [
-                ('Producto',    0.45, 220),
-                ('Lote',        0.15,  80),
-                ('Ubicacion',   0.20, 120),
-                ('Vencimiento', 0.12, 100),
-                ('Stock',       0.08,  60),
-            ]
+            # Ajustar según si ubicación está visible
+            if self.show_ubicacion.get():
+                specs = [
+                    ('Producto',    0.45, 220),
+                    ('Lote',        0.15,  80),
+                    ('Ubicacion',   0.20, 120),
+                    ('Vencimiento', 0.12, 100),
+                    ('Stock',       0.08,  60),
+                ]
+            else:
+                specs = [
+                    ('Producto',    0.55, 220),
+                    ('Lote',        0.18,  80),
+                    ('Vencimiento', 0.18, 100),
+                    ('Stock',       0.09,  60),
+                ]
             for col, frac, minw in specs:
-                tw.column(col, width=max(int(width * frac), minw), stretch=True)
+                if col in tw['columns']:
+                    tw.column(col, width=max(int(width * frac), minw), stretch=True)
         except Exception:
             pass
+
+    def _toggle_ubicacion_column(self):
+        """Muestra u oculta la columna de Ubicación."""
+        try:
+            if self.show_ubicacion.get():
+                # Mostrar columna
+                self.product_tree['displaycolumns'] = ("Producto", "Lote", "Ubicacion", "Vencimiento", "Stock")
+                self.vale_tree['displaycolumns'] = ("Producto", "Lote", "Ubicacion", "Vencimiento", "Cantidad")
+            else:
+                # Ocultar columna
+                self.product_tree['displaycolumns'] = ("Producto", "Lote", "Vencimiento", "Stock")
+                self.vale_tree['displaycolumns'] = ("Producto", "Lote", "Vencimiento", "Cantidad")
+            self._autosize_product_columns()
+        except Exception:
+            pass
+
+    def _refresh_solicitantes_combo(self):
+        """Actualiza la lista de solicitantes en el combobox."""
+        try:
+            solicitantes = self.user_manager.get_solicitantes()
+            self.solicitante_combo['values'] = solicitantes
+            if not self.solicitante_var.get() and solicitantes:
+                self.solicitante_var.set(solicitantes[0])
+        except Exception:
+            pass
+
+    def _refresh_usuarios_combo(self):
+        """Actualiza la lista de usuarios de bodega en el combobox."""
+        try:
+            usuarios = self.user_manager.get_usuarios_bodega()
+            self.usuario_bodega_combo['values'] = usuarios
+            if not self.usuario_bodega_var.get() and usuarios:
+                self.usuario_bodega_var.set(usuarios[0])
+        except Exception:
+            pass
+
+    def _refresh_ubicaciones_checklist(self) -> None:
+        try:
+            df = self.manager.bioplates_inventory
+            if df is None or df.empty or 'Ubicacion' not in df.columns:
+                ubicaciones = []
+            else:
+                ubicaciones = sorted(
+                    {str(x).strip() for x in df['Ubicacion'].dropna().astype(str) if str(x).strip()}
+                )
+        except Exception:
+            ubicaciones = []
+        existing = self.ubicacion_exclude_vars or {}
+        new_vars = {}
+        for ubi in ubicaciones:
+            var = existing.get(ubi)
+            if var is None:
+                var = tk.BooleanVar(value=False)
+            new_vars[ubi] = var
+        self.ubicacion_exclude_vars = new_vars
+        self._render_ubicaciones_checklist()
+
+    def _render_ubicaciones_checklist(self) -> None:
+        frame = getattr(self, 'ubicacion_checklist_frame', None)
+        if not frame:
+            return
+        for child in frame.winfo_children():
+            child.destroy()
+        ubicaciones = sorted(self.ubicacion_exclude_vars.keys())
+        term = ''
+        try:
+            term = (self.ubicacion_exclude_search_var.get() if self.ubicacion_exclude_search_var else '').strip().lower()
+        except Exception:
+            term = ''
+        shown = 0
+        for ubi in ubicaciones:
+            if term and term not in ubi.lower():
+                continue
+            var = self.ubicacion_exclude_vars.get(ubi)
+            cb = ttk.Checkbutton(frame, text=ubi, variable=var, command=self.filter_products)
+            cb.pack(anchor='w')
+            shown += 1
+        if shown == 0:
+            ttk.Label(frame, text="(sin ubicaciones)").pack(anchor='w')
+
+    def _get_excluded_ubicaciones(self):
+        try:
+            return [ubi for ubi, var in self.ubicacion_exclude_vars.items() if var.get()]
+        except Exception:
+            return []
+
+    def _clear_ubicaciones_excluidas(self) -> None:
+        try:
+            for var in self.ubicacion_exclude_vars.values():
+                var.set(False)
+        except Exception:
+            pass
+        self._render_ubicaciones_checklist()
 
     def _clear_filters(self) -> None:
         self.search_var.set("")
@@ -328,6 +897,12 @@ class ValeConsumoApp:
         self.vdesde_var.set("")
         self.vhasta_var.set("")
         self.stock_only_var.set(False)
+        try:
+            if self.ubicacion_exclude_search_var is not None:
+                self.ubicacion_exclude_search_var.set("")
+        except Exception:
+            pass
+        self._clear_ubicaciones_excluidas()
         self.filter_products()
 
     # -------- Vale / Historial --------
@@ -340,13 +915,9 @@ class ValeConsumoApp:
         self.vale_notebook = ttk.Notebook(frame)
         self.vale_notebook.grid(row=0, column=0, sticky='nsew')
 
-        self._init_vale_tab()
-        self._init_history_tab()
-        self.refresh_history()
-
-    def _init_vale_tab(self) -> None:
+        # Tab Solicitud
         self.vale_tab = ttk.Frame(self.vale_notebook)
-        self.vale_notebook.add(self.vale_tab, text='Vale')
+        self.vale_notebook.add(self.vale_tab, text='Solicitud')
         self.vale_tab.columnconfigure(0, weight=1)
         self.vale_tab.rowconfigure(0, weight=1)
 
@@ -377,41 +948,80 @@ class ValeConsumoApp:
         v_vsb.grid(row=0, column=1, sticky='ns')
         self.vale_tree.configure(yscrollcommand=v_vsb.set)
 
-        actions = ttk.Frame(self.vale_tab, padding=10)
-        actions.grid(row=0, column=1, sticky='ns', padx=(8, 0))
-        ttk.Button(actions, text="Eliminar Producto", command=self.remove_from_vale, width=26).pack(pady=6, fill='x')
-        ttk.Button(actions, text="Generar e Imprimir Vale", command=self.generate_and_print_vale, width=26).pack(pady=6, fill='x')
-        ttk.Button(actions, text="Limpiar Vale", command=self.clear_vale, width=26).pack(pady=6, fill='x')
+        self.vale_actions_frame = ttk.Frame(self.vale_tab, padding=12)
+        self.vale_actions_frame.grid(row=0, column=1, sticky='ns', padx=(8, 0))
+        ttk.Button(self.vale_actions_frame, text="Eliminar Producto", command=self.remove_from_vale, width=26).pack(pady=8, fill='x')
+        ttk.Button(self.vale_actions_frame, text="Generar e Imprimir Solicitud", command=self.generate_and_print_vale, width=26).pack(pady=8, fill='x')
+        ttk.Button(self.vale_actions_frame, text="Limpiar Solicitud", command=self.clear_vale, width=26).pack(pady=8, fill='x')
 
     def _init_history_tab(self) -> None:
         self.hist_tab = ttk.Frame(self.vale_notebook)
         self.vale_notebook.add(self.hist_tab, text='Historial')
         self._build_history_ui()
+        self.refresh_history()
+
+        # Tab Manager de Solicitudes
+        try:
+            self.mgr_tab = ttk.Frame(self.vale_notebook)
+            self.vale_notebook.add(self.mgr_tab, text='Manager Solicitudes')
+            self._build_manager_ui()
+            self.refresh_manager()
+        except Exception:
+            pass
 
     def _build_history_ui(self) -> None:
-        self._ensure_history_dir()
+        if not os.path.exists(self.history_dir):
+            os.makedirs(self.history_dir, exist_ok=True)
 
-        self.history_frame = ttk.Frame(self.hist_tab, padding=10)
+        self.history_frame = ttk.Frame(self.hist_tab, padding=12)
         self.history_frame.pack(fill='both', expand=True)
         self.history_frame.columnconfigure(0, weight=1)
-        self.history_frame.rowconfigure(0, weight=1)
+        # Fila 1 (árbol) crecerá
+        self.history_frame.rowconfigure(1, weight=1)
 
-        cols = ("Archivo", "Fecha")
+        # Barra de búsqueda
+        top = ttk.Frame(self.history_frame)
+        top.grid(row=0, column=0, columnspan=2, sticky='ew', pady=(0, 8))
+        ttk.Label(top, text='Buscar:', font=('Segoe UI', 10)).pack(side='left')
+        self.hist_search_var = tk.StringVar(value='')
+        hist_entry = ttk.Entry(top, textvariable=self.hist_search_var, width=32, font=('Segoe UI', 10))
+        hist_entry.pack(side='left', padx=(6, 0))
+        self.hist_search_var.trace_add('write', lambda *_: self.refresh_history())
+
+        # Historial basado en el registro: Numero, Estado, Fecha, Archivo, Items
+        cols = ("Numero", "Estado", "Fecha", "Archivo", "Items")
         self.history_tree = ttk.Treeview(self.history_frame, columns=cols, show='headings', selectmode='extended')
-        self.history_tree.heading('Archivo', text='Archivo')
-        self.history_tree.heading('Fecha', text='Fecha')
+        
+        # Hacer headers clicables para ordenar
+        self.history_sort_column = None
+        self.history_sort_reverse = False
+        
+        for col in cols:
+            self.history_tree.heading(col, text=col, command=lambda c=col: self._sort_history_column(c))
+        
+        self.history_tree.column('Numero', width=80, anchor='center', stretch=False)
+        self.history_tree.column('Estado', width=110, anchor='center', stretch=False)
+        self.history_tree.column('Fecha', width=170, anchor='center', stretch=False)
         self.history_tree.column('Archivo', width=520, anchor='w', stretch=True)
-        self.history_tree.column('Fecha', width=180, anchor='center', stretch=False)
-        self.history_tree.grid(row=0, column=0, sticky='nsew')
+        self.history_tree.column('Items', width=80, anchor='center', stretch=False)
+
+        self.history_tree.grid(row=1, column=0, sticky='nsew')
         h_vsb = ttk.Scrollbar(self.history_frame, orient='vertical', command=self.history_tree.yview)
-        h_vsb.grid(row=0, column=1, sticky='ns')
+        h_vsb.grid(row=1, column=1, sticky='ns')
         self.history_tree.configure(yscrollcommand=h_vsb.set)
-        self.history_tree.bind('<Configure>', self._autosize_history_columns)
+        
+        # Doble clic para abrir PDF
+        self.history_tree.bind('<Double-Button-1>', lambda e: self.open_selected_history())
+        
+        try:
+            self.history_tree.bind('<Configure>', self._autosize_history_columns)
+        except Exception:
+            pass
 
         act = ttk.Frame(self.history_frame)
-        act.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(8, 0))
-        ttk.Button(act, text="Unificar seleccionados", command=self.merge_selected_history).pack(side='left', padx=(0, 6))
-        ttk.Button(act, text="Abrir PDF", command=self.open_selected_history).pack(side='left', padx=(0, 6))
+        act.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(10, 0))
+        ttk.Button(act, text="Unificar seleccionados", command=self.merge_selected_history).pack(side='left', padx=(0, 8))
+        ttk.Button(act, text="Abrir PDF", command=self.open_selected_history).pack(side='left', padx=(0, 8))
         ttk.Button(act, text="Reimprimir", command=self.print_selected_history).pack(side='left')
 
     def _autosize_history_columns(self, event: Optional['tk.Event'] = None) -> None:
@@ -436,74 +1046,144 @@ class ValeConsumoApp:
             self.log.debug("Creada carpeta de historial en %s", HISTORY_DIR)
 
     def refresh_history(self) -> None:
+        # Cargar desde el registro; si esta vacio y existen PDFs, reindexar primero
         for i in self.history_tree.get_children():
             self.history_tree.delete(i)
         try:
-            files = [f for f in os.listdir(HISTORY_DIR) if f.lower().endswith('.pdf')]
-        except Exception as exc:
-            self.log.error("No se pudo listar historial: %s", exc)
-            files = []
-        files.sort(reverse=True)
-        for f in files:
-            p = os.path.join(HISTORY_DIR, f)
+            rows = self.registry.list()
+            if not rows:
+                try:
+                    if os.path.isdir(self.history_dir) and any(fn.lower().endswith('.pdf') for fn in os.listdir(self.history_dir)):
+                        self.registry.reindex()
+                        rows = self.registry.list()
+                except Exception:
+                    pass
+            # Filtrar por término de búsqueda si se ingresó
             try:
-                ts = datetime.fromtimestamp(os.path.getmtime(p)).strftime('%Y-%m-%d %H:%M:%S')
+                term = (self.hist_search_var.get() if hasattr(self, 'hist_search_var') else '').strip().lower()
             except Exception:
-                ts = ''
-            self.history_tree.insert('', 'end', iid=f, values=(f, ts))
-        self.log.info("Historial actualizado (%d archivos)", len(files))
+                term = ''
+            if term:
+                def _hit(e):
+                    return (
+                        term in str(e.get('number', '')).lower() or
+                        term in str(e.get('status', '')).lower() or
+                        term in str(e.get('created_at', '')).lower() or
+                        term in str(e.get('pdf', '')).lower()
+                    )
+                rows = [e for e in rows if _hit(e)]
+            
+            # Ordenar por fecha (más reciente primero) por defecto
+            try:
+                rows = sorted(rows, key=lambda x: x.get('created_at', ''), reverse=True)
+            except Exception:
+                pass
+            
+            for e in rows:
+                iid = str(e.get('number'))
+                vals = (e.get('number'), e.get('status'), e.get('created_at'), e.get('pdf'), e.get('items_count'))
+                self.history_tree.insert('', 'end', iid=iid, values=vals)
+            self._apply_stripes(self.history_tree)
+        except Exception:
+            pass
+
+    def _sort_history_column(self, col):
+        """Ordena el historial por la columna seleccionada."""
+        try:
+            # Si es la misma columna, invertir orden
+            if self.history_sort_column == col:
+                self.history_sort_reverse = not self.history_sort_reverse
+            else:
+                self.history_sort_column = col
+                self.history_sort_reverse = False
+            
+            # Obtener todos los items
+            items = [(self.history_tree.set(k, col), k) for k in self.history_tree.get_children('')]
+            
+            # Ordenar
+            def sort_key(item):
+                val = item[0]
+                # Intentar convertir a número si es posible
+                try:
+                    return int(val)
+                except:
+                    try:
+                        return float(val)
+                    except:
+                        return str(val).lower()
+            
+            items.sort(key=sort_key, reverse=self.history_sort_reverse)
+            
+            # Reordenar items en el tree
+            for index, (val, k) in enumerate(items):
+                self.history_tree.move(k, '', index)
+            
+            # Actualizar zebra stripes
+            self._apply_stripes(self.history_tree)
+        except Exception:
+            pass
 
     def _with_history_selection(self, action: Callable[[str, str], None]) -> None:
         cur = self.history_tree.focus()
         if not cur:
             messagebox.showwarning("Historial", MSG_SELECT_HISTORY)
             return
-        path = os.path.join(HISTORY_DIR, cur)
-        action(cur, path)
-
-    def open_selected_history(self) -> None:
-        def _open(_: str, path: str) -> None:
-            try:
-                if os.path.exists(path):
-                    os.startfile(path)
-            except Exception as e:
-                messagebox.showerror("Abrir PDF", f"No se pudo abrir el PDF: {e}")
-                self.log.exception("No se pudo abrir historial %s", path)
-
-        self._with_history_selection(_open)
+        try:
+            num = int(cur)
+            e = self.registry.find_by_number(num)
+            if not e:
+                messagebox.showwarning("Historial", "No se encontro informacion del vale seleccionado.")
+                return
+            path = os.path.join(self.history_dir, e.get('pdf', ''))
+            if os.path.exists(path):
+                os.startfile(path)
+        except Exception as e:
+            messagebox.showerror("Abrir PDF", f"No se pudo abrir el PDF: {e}")
 
     def print_selected_history(self) -> None:
-        def _print(filename: str, path: str) -> None:
-            try:
-                if not os.path.exists(path):
-                    messagebox.showwarning("Historial", "El archivo seleccionado no existe.")
-                    return
-                if WINDOWS_OS:
-                    print_pdf_windows(path, copies=1)
-                else:
-                    os.startfile(path)
-                self.log.info("Reimpresion solicitada para %s", filename)
-            except Exception as e:
-                messagebox.showerror("Reimprimir", f"Error al imprimir: {e}")
-                self.log.exception("Error al reimprimir %s", path)
-
-        self._with_history_selection(_print)
+        cur = self.history_tree.focus()
+        if not cur:
+            messagebox.showwarning("Historial", "Seleccione una solicitud del listado.")
+            return
+        try:
+            num = int(cur)
+            e = self.registry.find_by_number(num)
+            if not e:
+                messagebox.showwarning("Historial", "No se encontro el registro de la solicitud.")
+                return
+            path = os.path.join(self.history_dir, e.get('pdf', ''))
+            if os.path.exists(path) and WINDOWS_OS:
+                # Obtener cantidad de copias
+                copias = max(1, int(self.copias_var.get()))
+                print_pdf_windows(path, copies=copias)
+            elif os.path.exists(path):
+                os.startfile(path)
+        except Exception as e:
+            messagebox.showerror("Reimprimir", f"Error al imprimir: {e}")
 
     def merge_selected_history(self) -> None:
         sels = list(self.history_tree.selection())
         if not sels or len(sels) < 2:
             messagebox.showwarning("Historial", "Seleccione al menos dos vales para unificar.")
             return
+        # Resolver rutas desde el registro
         input_paths = []
         for iid in sels:
-            p = os.path.join(HISTORY_DIR, iid)
+            try:
+                num = int(iid)
+            except Exception:
+                continue
+            e = self.registry.find_by_number(num)
+            if not e:
+                continue
+            p = os.path.join(self.history_dir, e.get('pdf', ''))
             if os.path.exists(p) and p.lower().endswith('.pdf'):
                 input_paths.append(p)
         if len(input_paths) < 2:
             messagebox.showwarning("Historial", "No hay suficientes PDFs validos para unificar.")
             return
 
-        # Intentar tabla unificada a partir de sidecars JSON
+        # Intentar tabla unificada a partir de sidecars JSON (consolidada)
         unified_rows = []
         missing_json = []
         try:
@@ -511,6 +1191,7 @@ class ValeConsumoApp:
         except Exception:
             json = None
         if json is not None:
+            acc = {}
             for p in input_paths:
                 base, _ = os.path.splitext(p)
                 jpath = base + '.json'
@@ -518,22 +1199,68 @@ class ValeConsumoApp:
                     try:
                         with open(jpath, 'r', encoding='utf-8') as f:
                             data = json.load(f)
+                        pdf_name = os.path.basename(p)
+                        origin_num = None
+                        try:
+                            parts = pdf_name.split('_')
+                            if len(parts) >= 2 and parts[1].isdigit():
+                                origin_num = parts[1].lstrip('0') or '0'
+                        except Exception:
+                            origin_num = None
                         for it in data.get('items', []):
-                            unified_rows.append({
-                                'Origen': os.path.basename(p),
-                                'Producto': it.get('Producto', ''),
-                                'Lote': it.get('Lote', ''),
-                                'Ubicacion': it.get('Ubicacion', ''),
-                                'Vencimiento': it.get('Vencimiento', ''),
-                                'Cantidad': it.get('Cantidad', ''),
-                            })
+                            key = (
+                                it.get('Producto', ''),
+                                it.get('Lote', ''),
+                                it.get('Ubicacion', ''),
+                                it.get('Vencimiento', ''),
+                            )
+                            try:
+                                qty = int(it.get('Cantidad', 0))
+                            except Exception:
+                                qty = 0
+                            cur = acc.get(key)
+                            if not cur:
+                                cur = {'Cantidad': 0, 'Origenes': set()}
+                                acc[key] = cur
+                            cur['Cantidad'] += qty
+                            cur['Origenes'].add(str(origin_num) if origin_num is not None else pdf_name)
                     except Exception:
                         missing_json.append(os.path.basename(p))
                 else:
                     missing_json.append(os.path.basename(p))
+            for (prod, lote, ubi, venc), info in acc.items():
+                origenes = sorted(list(info.get('Origenes', [])), key=lambda x: (len(x), x))
+                origen_txt = '+'.join(origenes) if origenes else ''
+                unified_rows.append({
+                    'Origen': origen_txt,
+                    'Producto': prod,
+                    'Lote': lote,
+                    'Ubicacion': ubi,
+                    'Vencimiento': venc,
+                    'Cantidad': info.get('Cantidad', 0),
+                })
 
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        out_file = os.path.join(HISTORY_DIR, f"vale_unificado_{ts}.pdf")
+        # Nombre con origenes destacados (limitado a 5 tokens)
+        try:
+            origins_in_name = ''
+            if unified_rows:
+                tokens = []
+                for r in unified_rows:
+                    o = (r.get('Origen') or '').split('+')
+                    for t in o:
+                        if t and t not in tokens:
+                            tokens.append(t)
+                        if len(tokens) >= 5:
+                            break
+                    if len(tokens) >= 5:
+                        break
+                if tokens:
+                    origins_in_name = '_(' + '+'.join(tokens) + ')'
+            out_name = f"solicitud_unificada{origins_in_name}_{ts}.pdf"
+        except Exception:
+            out_name = f"solicitud_unificada_{ts}.pdf"
+        out_file = os.path.join(self.history_dir, out_name)
 
         if unified_rows:
             try:
@@ -696,6 +1423,9 @@ class ValeConsumoApp:
             self.subfam_combo['values'] = ['(Todas)']
         self.subfam_combo.set('(Todas)')
 
+        self._refresh_ubicaciones_checklist()
+        self.filter_products()
+
     def filter_products(self) -> None:
         df = self.manager.bioplates_inventory
         if df is None or df.empty:
@@ -716,6 +1446,10 @@ class ValeConsumoApp:
         except Exception as exc:
             self.log.error("Filtro fallo, se muestra inventario completo: %s", exc)
             out = df.copy()
+        excluded = self._get_excluded_ubicaciones()
+        if excluded and 'Ubicacion' in out.columns:
+            excluded_set = {str(x).strip().lower() for x in excluded}
+            out = out[~out['Ubicacion'].fillna('').astype(str).str.strip().str.lower().isin(excluded_set)]
         self.filtered_df = out
         self._populate_products(out)
         self.log.info("Filtro aplicado -> %d filas visibles", len(out))
@@ -725,6 +1459,45 @@ class ValeConsumoApp:
             self.product_tree.delete(i)
         if df is None or df.empty:
             return
+        
+        def _parse_vencimiento(value):
+            if value is None:
+                return None
+            if isinstance(value, datetime):
+                return value.date()
+            try:
+                return value.to_pydatetime().date()
+            except Exception:
+                pass
+            try:
+                num = float(value)
+                if not pd.isna(num):
+                    return (datetime(1899, 12, 30) + timedelta(days=num)).date()
+            except Exception:
+                pass
+            venc_str = str(value).strip()
+            if not venc_str:
+                return None
+            for fmt in ['%Y-%m-%d', '%d-%m-%Y', '%d/%m/%Y', '%Y/%m/%d', '%Y-%m-%d %H:%M:%S']:
+                try:
+                    return datetime.strptime(venc_str, fmt).date()
+                except Exception:
+                    continue
+            return None
+
+        today = datetime.now().date()
+        earliest_by_producto = {}
+        parsed_dates = {}
+        for idx, row in df.iterrows():
+            producto = str(row.get('Nombre_del_Producto', '')).strip()
+            producto_key = producto.lower()
+            venc_date = _parse_vencimiento(row.get('Vencimiento', ''))
+            parsed_dates[idx] = venc_date
+            if producto_key and venc_date:
+                prev = earliest_by_producto.get(producto_key)
+                if not prev or venc_date < prev:
+                    earliest_by_producto[producto_key] = venc_date
+
         for idx, row in df.iterrows():
             values = [
                 row.get('Nombre_del_Producto', ''),
@@ -733,7 +1506,25 @@ class ValeConsumoApp:
                 row.get('Vencimiento', ''),
                 row.get('Stock', ''),
             ]
-            self.product_tree.insert('', 'end', iid=str(int(idx)), values=values)
+
+            # Determinar vencimiento (naranjo vencido, rojo 2-3 meses) solo para el mas proximo por producto
+            tags = []
+            venc_date = parsed_dates.get(idx)
+            producto = str(row.get('Nombre_del_Producto', '')).strip()
+            producto_key = producto.lower()
+            if producto_key and venc_date and venc_date == earliest_by_producto.get(producto_key):
+                try:
+                    tags.append('vencimiento_mas_proximo')
+                    dias_restantes = (venc_date - today).days
+                    if dias_restantes < 0:
+                        tags.append('vencido')
+                    elif self.days_vencimiento_rojo_min <= dias_restantes <= self.days_vencimiento_rojo_max:
+                        tags.append('vencimiento_proximo')
+                except Exception:
+                    pass
+            
+            self.product_tree.insert('', 'end', iid=str(int(idx)), values=values, tags=tuple(tags) if tags else ())
+        
         self._apply_stripes(self.product_tree)
 
     def add_to_vale(self) -> None:
@@ -753,8 +1544,7 @@ class ValeConsumoApp:
             self.manager.add_to_vale(item_index, qty)
             self.log.info("Agregado item al vale (idx=%s qty=%s)", item_index, qty)
         except Exception as e:
-            self.log.warning("No se pudo agregar item: %s", e)
-            messagebox.showerror('Agregar al Vale', str(e))
+            messagebox.showerror('Agregar a Solicitud', str(e))
             return
         # Refrescar vistas manteniendo filtros
         self.update_vale_treeview()
@@ -771,19 +1561,194 @@ class ValeConsumoApp:
         self._apply_stripes(self.vale_tree)
 
     def _apply_stripes(self, tree: ttk.Treeview) -> None:
-        """Aplica zebra stripes al Treeview para mejorar legibilidad."""
+        """Aplica zebra stripes al Treeview para mejorar legibilidad, respetando tags de vencimiento."""
         try:
             tree.tag_configure('evenrow', background='#ffffff')
             tree.tag_configure('oddrow', background='#fafafa')
             for n, iid in enumerate(tree.get_children()):
-                tree.item(iid, tags=('evenrow' if n % 2 == 0 else 'oddrow',))
+                # Verificar si tiene tag de vencimiento
+                current_tags = tree.item(iid, 'tags')
+                if current_tags and ('vencimiento_proximo' in current_tags or 'vencido' in current_tags or 'vencimiento_mas_proximo' in current_tags):
+                    # Mantener el tag de vencimiento
+                    continue
+                else:
+                    # Aplicar zebra stripe
+                    tree.item(iid, tags=('evenrow' if n % 2 == 0 else 'oddrow',))
         except Exception:
             pass
+
+    # --------------- Manager de Vales ---------------
+    def _build_manager_ui(self) -> None:
+        frame = ttk.Frame(self.mgr_tab, padding=12)
+        frame.pack(fill='both', expand=True)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
+
+        # Filtros superiores (estado)
+        top = ttk.Frame(frame)
+        top.grid(row=0, column=0, sticky='ew', pady=(0,8))
+        ttk.Label(top, text='Estado:', font=('Segoe UI', 10)).pack(side='left')
+        self.mgr_estado = tk.StringVar(value='(Todos)')
+        ttk.Combobox(top, textvariable=self.mgr_estado, values=['(Todos)','Pendiente','Descontado','Anulado'], state='readonly', width=14, font=('Segoe UI', 10)).pack(side='left', padx=(6,12))
+        ttk.Button(top, text='Actualizar', command=self.refresh_manager).pack(side='left')
+        ttk.Button(top, text='Reindexar', command=self._mgr_reindex).pack(side='left', padx=(12,0))
+
+        # Búsqueda
+        ttk.Label(top, text=' Buscar:', font=('Segoe UI', 10)).pack(side='left', padx=(12,0))
+        self.mgr_search_var = tk.StringVar(value='')
+        e_msrch = ttk.Entry(top, textvariable=self.mgr_search_var, width=28, font=('Segoe UI', 10))
+        e_msrch.pack(side='left', padx=(6,0))
+        self.mgr_search_var.trace_add('write', lambda *_: self.refresh_manager())
+
+        cols = ("Numero","Estado","Fecha","Archivo","Items")
+        self.mgr_tree = ttk.Treeview(frame, columns=cols, show='headings', selectmode='extended')
+        for c, w, anc, st in (
+            ('Numero', 80, 'center', False),
+            ('Estado', 110, 'center', False),
+            ('Fecha', 170, 'center', False),
+            ('Archivo', 520, 'w', True),
+            ('Items', 80, 'center', False),
+        ):
+            self.mgr_tree.heading(c, text=c)
+            self.mgr_tree.column(c, width=w, anchor=anc, stretch=st)
+        self.mgr_tree.grid(row=1, column=0, sticky='nsew')
+        vbar = ttk.Scrollbar(frame, orient='vertical', command=self.mgr_tree.yview)
+        vbar.grid(row=1, column=1, sticky='ns')
+        self.mgr_tree.configure(yscrollcommand=vbar.set)
+
+        # Acciones
+        act = ttk.Frame(frame)
+        act.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(10,0))
+        ttk.Button(act, text='Marcar Pendiente', command=lambda: self._mgr_set_status('Pendiente')).pack(side='left', padx=(0,8))
+        ttk.Button(act, text='Marcar Descontado', command=lambda: self._mgr_set_status('Descontado')).pack(side='left', padx=(0,8))
+        ttk.Button(act, text='Marcar Anulado', command=lambda: self._mgr_set_status('Anulado')).pack(side='left', padx=(0,8))
+        ttk.Button(act, text='Listado PDF (Pendientes)', command=lambda: self._mgr_export_pdf('Pendiente')).pack(side='right', padx=(8,0))
+        ttk.Button(act, text='Listado PDF (Descontados)', command=lambda: self._mgr_export_pdf('Descontado')).pack(side='right', padx=(8,0))
+        ttk.Button(act, text='Exportar Excel (Pendientes)', command=lambda: self._mgr_export_excel('Pendiente')).pack(side='right', padx=(8,0))
+        ttk.Button(act, text='Exportar Excel (Descontados)', command=lambda: self._mgr_export_excel('Descontado')).pack(side='right', padx=(8,0))
+
+    def refresh_manager(self) -> None:
+        try:
+            for i in self.mgr_tree.get_children():
+                self.mgr_tree.delete(i)
+            estado = self.mgr_estado.get() if hasattr(self, 'mgr_estado') else '(Todos)'
+            entries = self.registry.list(None if estado in (None,'', '(Todos)') else estado)
+            if not entries:
+                try:
+                    if os.path.isdir(self.history_dir) and any(fn.lower().endswith('.pdf') for fn in os.listdir(self.history_dir)):
+                        self.registry.reindex()
+                        entries = self.registry.list(None if estado in (None,'', '(Todos)') else estado)
+                except Exception:
+                    pass
+            # Filtrar por búsqueda
+            try:
+                term = (self.mgr_search_var.get() if hasattr(self, 'mgr_search_var') else '').strip().lower()
+            except Exception:
+                term = ''
+            if term:
+                def _hit(e):
+                    return (
+                        term in str(e.get('number', '')).lower() or
+                        term in str(e.get('status', '')).lower() or
+                        term in str(e.get('created_at', '')).lower() or
+                        term in str(e.get('pdf', '')).lower()
+                    )
+                entries = [e for e in entries if _hit(e)]
+            for e in entries:
+                self.mgr_tree.insert('', 'end', iid=str(e.get('number')), values=(e.get('number'), e.get('status'), e.get('created_at'), e.get('pdf'), e.get('items_count')))
+            self._apply_stripes(self.mgr_tree)
+        except Exception:
+            pass
+
+
+    def _autosize_history_columns(self, event=None) -> None:
+        """Ajusta columnas del Historial para evitar espacios en blanco."""
+        try:
+            tw = self.history_tree
+            tw.update_idletasks()
+            width = tw.winfo_width()
+            if not width:
+                return
+            fecha_min = 180
+            fecha_w = max(fecha_min, int(width * 0.22))
+            archivo_w = max(200, width - fecha_w - 20)
+            tw.column('Archivo', width=archivo_w, anchor='w', stretch=True)
+            tw.column('Fecha', width=fecha_w, anchor='center', stretch=False)
+        except Exception:
+            pass
+
+    def _mgr_reindex(self) -> None:
+        try:
+            res = self.registry.reindex()
+            self.refresh_manager()
+            self.refresh_history()
+            try:
+                messagebox.showinfo('Reindexar', f"Agregados: {res.get('added',0)}\nOmitidos: {res.get('skipped',0)}")
+            except Exception:
+                pass
+        except Exception as e:
+            messagebox.showerror('Reindexar', f'No se pudo reindexar: {e}')
+    def _mgr_selected_numbers(self) -> list[int]:
+        try:
+            return [int(i) for i in self.mgr_tree.selection()]
+        except Exception:
+            return []
+
+    def _mgr_set_status(self, new_status: str) -> None:
+        nums = self._mgr_selected_numbers()
+        if not nums:
+            messagebox.showwarning('Manager Solicitudes', 'Seleccione una o mas solicitudes.')
+            return
+        try:
+            changed = self.registry.update_status(nums, new_status)
+            if changed:
+                self.refresh_manager()
+                self.refresh_history()
+        except Exception as e:
+            messagebox.showerror('Manager Solicitudes', f'No se pudo actualizar el estado: {e}')
+
+    def _mgr_export_excel(self, status: str) -> None:
+        try:
+            rows = self.registry.list(status)
+            if not rows:
+                messagebox.showinfo('Exportar', f'No hay solicitudes con estado {status}.')
+                return
+            import pandas as _pd
+            df = _pd.DataFrame(rows)
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            out = os.path.join(self.history_dir, f'solicitudes_{status.lower()}_{ts}.xlsx')
+            df.to_excel(out, index=False)
+            try:
+                os.startfile(out)
+            except Exception:
+                pass
+            messagebox.showinfo('Exportar', f'Listado exportado: {os.path.basename(out)}')
+        except Exception as e:
+            messagebox.showerror('Exportar', f'Error al exportar: {e}')
+
+    def _mgr_export_pdf(self, status: str) -> None:
+        try:
+            rows = self.registry.list(status)
+            if not rows:
+                messagebox.showinfo('Listado', f'No hay solicitudes con estado {status}.')
+                return
+            from pdf_utils import build_vales_list_pdf
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            title = f"Listado de solicitudes - {status}"
+            out = os.path.join(self.history_dir, f'listado_solicitudes_{status.lower()}_{ts}.pdf')
+            build_vales_list_pdf(out, title, rows)
+            try:
+                os.startfile(out)
+            except Exception:
+                pass
+            messagebox.showinfo('Listado', f'PDF generado: {os.path.basename(out)}')
+        except Exception as e:
+            messagebox.showerror('Listado', f'Error al generar PDF: {e}')
 
     def remove_from_vale(self) -> None:
         sel = self.vale_tree.focus()
         if not sel or not sel.startswith('val-'):
-            messagebox.showwarning('Vale', MSG_SELECT_VALE_ITEM)
+            messagebox.showwarning('Solicitud', 'Seleccione un item de la solicitud.')
             return
         try:
             idx = int(sel.split('-')[1])
@@ -803,34 +1768,96 @@ class ValeConsumoApp:
         self.filter_products()
 
     def generate_and_print_vale(self) -> None:
-        if self.manager.is_vale_empty():
-            messagebox.showwarning('Vale', MSG_EMPTY_VALE)
+        if not self.manager.current_vale:
+            messagebox.showwarning('Solicitud', 'No hay productos en la solicitud.')
             return
-        self._ensure_history_dir()
-        emission_time = datetime.now()
-        ts = emission_time.strftime('%Y%m%d_%H%M%S')
-        filename = os.path.join(HISTORY_DIR, f'vale_{ts}.pdf')
-        payload = self.manager.serialize_current_vale(emission_time)
-        payload['filename'] = os.path.basename(filename)
+        
+        # Validar que haya solicitante y usuario seleccionados
+        solicitante = self.solicitante_var.get().strip()
+        usuario_bodega = self.usuario_bodega_var.get().strip()
+        if not solicitante:
+            messagebox.showwarning('Solicitud', 'Debe seleccionar un solicitante.')
+            return
+        if not usuario_bodega:
+            messagebox.showwarning('Solicitud', 'Debe seleccionar un usuario de bodega.')
+            return
+        
+        if not os.path.exists(self.history_dir):
+            os.makedirs(self.history_dir, exist_ok=True)
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        # Reservar numero para nombrar el archivo
         try:
-            self.manager.generate_pdf(filename, emission_time)
-            self._write_vale_sidecar(ts, payload)
-            if WINDOWS_OS and settings.get_auto_print():
-                print_pdf_windows(filename, copies=1)
-            self._open_pdf_safe(filename)
-            messagebox.showinfo('Vale Generado', 'Vale generado correctamente.')
-            self.manager.finalize_vale()
+            number = self.registry.next_number()
+        except Exception:
+            number = None
+        if number is not None:
+            padded = f"{int(number):03d}"
+            base_pdf = f"solicitud_{padded}_{ts}.pdf"
+            base_json = f"solicitud_{padded}_{ts}.json"
+        else:
+            base_pdf = f"solicitud_{ts}.pdf"
+            base_json = f"solicitud_{ts}.json"
+        filename = os.path.join(self.history_dir, base_pdf)
+        try:
+            # Agregar información de solicitante y usuario al vale
+            vale_data_with_users = {
+                'solicitante': solicitante,
+                'usuario_bodega': usuario_bodega,
+                'numero_correlativo': padded if number is not None else '',
+                'items': self.manager.current_vale
+            }
+            
+            # Generar PDF (via ValeManager -> pdf_utils)
+            from pdf_utils import build_vale_pdf
+            build_vale_pdf(filename, vale_data_with_users, datetime.now())
+            
+            # Guardar datos estructurados del vale (sidecar JSON)
+            try:
+                import json
+                sidecar = os.path.join(self.history_dir, base_json)
+                payload = {
+                    'filename': os.path.basename(filename),
+                    'emission_time': datetime.now().isoformat(timespec='seconds'),
+                    'solicitante': solicitante,
+                    'usuario_bodega': usuario_bodega,
+                    'numero_correlativo': padded if number is not None else '',
+                    'items': self.manager.current_vale,
+                }
+                with open(sidecar, 'w', encoding='utf-8') as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2)
+            except Exception:
+                sidecar = ''
+            
+            # Obtener cantidad de copias
+            copias = max(1, int(self.copias_var.get()))
+            
+            # Impresion directa (sin abrir PDF viewer)
+            if WINDOWS_OS:
+                print_pdf_windows(filename, copies=copias)
+            
+            messagebox.showinfo('Solicitud Generada', f'Solicitud N° {padded if number is not None else "N/A"} generada correctamente.\n{copias} copia(s) enviada(s) a la impresora.')
+            
+            # Registrar en el indice con el numero reservado y refrescar vistas
+            try:
+                if number is not None:
+                    self.registry.register_with_number(
+                        int(number),
+                        os.path.basename(filename),
+                        os.path.basename(sidecar) if sidecar else '',
+                        len(self.manager.current_vale),
+                    )
+            except Exception:
+                pass
+            # Limpiar vale e historial
+            self.manager.current_vale = []
             self.update_vale_treeview()
             self.refresh_history()
-            self.log.info(
-                "Vale generado -> %s (items=%s total=%s)",
-                filename,
-                payload['item_count'],
-                payload['total_quantity'],
-            )
+            try:
+                self.refresh_manager()
+            except Exception:
+                pass
         except Exception as e:
-            self.log.exception("Ocurrio un error al generar/imprimir vale")
-            messagebox.showerror('Generar Vale', f'Ocurrio un error: {e}')
+            messagebox.showerror('Generar Solicitud', f'Ocurrio un error: {e}')
 
     def _write_vale_sidecar(self, timestamp: str, payload: dict) -> None:
         try:
@@ -857,3 +1884,4 @@ def run_app() -> None:
 
 if __name__ == '__main__':
     run_app()
+

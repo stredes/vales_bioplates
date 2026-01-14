@@ -201,6 +201,8 @@ function New-AppPackage {
     if (Test-Path $histSrc) { Copy-Item -Recurse -Force "$histSrc\*" $histDst -ErrorAction SilentlyContinue }
     $settingsSrc = 'app_settings.json'
     if (Test-Path $settingsSrc) { Copy-Item -Force $settingsSrc (Join-Path $distRoot $settingsSrc) -ErrorAction SilentlyContinue }
+    $instrSrc = 'instrucciones.txt'
+    if (Test-Path $instrSrc) { Copy-Item -Force $instrSrc (Join-Path $distRoot $instrSrc) -ErrorAction SilentlyContinue }
     Write-Host "Paquete generado en: dist/$Name.exe" -ForegroundColor Green
 }
 

@@ -9,7 +9,9 @@ from typing import Dict, Iterable, List
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
@@ -48,7 +50,14 @@ def _auto_col_widths(rows: Iterable[Iterable[str]], page_width: int, padd: int =
     return [max(60, int(w * scale)) for w in maxw]
 
 
-def build_vale_pdf(filename: str, vale_data: List[Dict], emission_time: datetime) -> None:
+def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: datetime) -> None:
+    """Genera un PDF de solicitud de productos (uso bodega).
+    
+    Args:
+        filename: Ruta donde guardar el PDF
+        vale_data_with_users: Dict con 'solicitante', 'usuario_bodega', 'numero_correlativo' e 'items'
+        emission_time: Fecha y hora de emisión
+    """
     doc = SimpleDocTemplate(
         filename,
         pagesize=letter,
@@ -61,12 +70,21 @@ def build_vale_pdf(filename: str, vale_data: List[Dict], emission_time: datetime
     elements = []
 
     title_style = ParagraphStyle("TitleStyle", parent=styles["Title"], fontSize=16, alignment=1)
-    elements.append(Paragraph("<b>VALE DE CONSUMO - BIOPLATES</b>", title_style))
+    elements.append(Paragraph("<b>SOLICITUD DE PRODUCTOS (USO BODEGA) - BIOPLATES</b>", title_style))
     elements.append(Spacer(1, 12))
 
+    # Obtener datos
+    solicitante = vale_data_with_users.get('solicitante', '')
+    usuario_bodega = vale_data_with_users.get('usuario_bodega', '')
+    numero_correlativo = vale_data_with_users.get('numero_correlativo', '')
+    vale_data = vale_data_with_users.get('items', [])
+
     metadata = [
+        ["N° Solicitud:", numero_correlativo],
         ["Fecha de Emision:", emission_time.strftime("%d-%m-%Y")],
         ["Hora de Emision:", emission_time.strftime("%H:%M:%S")],
+        ["Solicitado por:", solicitante],
+        ["Preparado por:", usuario_bodega],
     ]
 
     metadata_table = Table(metadata, colWidths=[150, 300])
@@ -136,6 +154,7 @@ def build_vale_pdf(filename: str, vale_data: List[Dict], emission_time: datetime
     elements.append(table)
     elements.append(Spacer(1, 48))
 
+    # Línea de firmas
     signature_data = [["________________________", "________________________"], ["Entregado por:", "Recibido por:"]]
     signature_table = Table(signature_data, colWidths=[250, 250])
     signature_table.setStyle(
@@ -148,6 +167,13 @@ def build_vale_pdf(filename: str, vale_data: List[Dict], emission_time: datetime
         )
     )
     elements.append(signature_table)
+    elements.append(Spacer(1, 24))
+
+    # Línea punteada con "Doc. Asociado"
+    from reportlab.platypus import HRFlowable
+    elements.append(HRFlowable(width="100%", thickness=1, lineCap='round', color=colors.grey, spaceBefore=10, spaceAfter=6, dash=[3, 3]))
+    doc_asociado_style = ParagraphStyle("DocAsociado", parent=styles["Normal"], fontSize=9, alignment=1, textColor=colors.grey)
+    elements.append(Paragraph("Doc. Asociado: _______________________", doc_asociado_style))
 
     doc.build(elements)
     logger.info("PDF generado correctamente en %s", filename)
@@ -171,7 +197,7 @@ def build_unified_vale_pdf(filename: str, rows: List[Dict], emission_time: datet
     elements = []
 
     title_style = ParagraphStyle("TitleStyle", parent=styles["Title"], fontSize=16, alignment=1)
-    elements.append(Paragraph("<b>VALE DE CONSUMO UNIFICADO - BIOPLATES</b>", title_style))
+    elements.append(Paragraph("<b>SOLICITUD DE PRODUCTOS UNIFICADA (USO BODEGA) - BIOPLATES</b>", title_style))
     elements.append(Spacer(1, 12))
 
     metadata = [
@@ -228,4 +254,45 @@ def build_unified_vale_pdf(filename: str, rows: List[Dict], emission_time: datet
 
     elements.append(Paragraph("Fin del vale unificado.", styles["Normal"]))
     doc.build(elements)
-    logger.info("PDF unificado generado: %s (%d filas)", filename, len(rows))
+
+
+def build_vales_list_pdf(filename: str, title: str, rows: List[Dict]) -> None:
+    """Genera un listado de vales (Numero, Estado, Fecha, Archivo, Items)."""
+    doc = SimpleDocTemplate(
+        filename,
+        pagesize=letter,
+        rightMargin=PDF_MARGIN_RIGHT,
+        leftMargin=PDF_MARGIN_LEFT,
+        topMargin=PDF_MARGIN_TOP,
+        bottomMargin=PDF_MARGIN_BOTTOM,
+    )
+    styles = getSampleStyleSheet()
+    elements = []
+    title_style = ParagraphStyle("TitleStyle", parent=styles["Title"], fontSize=16, alignment=1)
+    elements.append(Paragraph(title, title_style))
+    elements.append(Spacer(1, 12))
+
+    headers = ["Numero", "Estado", "Fecha", "Archivo", "Items"]
+    raw_rows = [headers]
+    for r in rows:
+        raw_rows.append([
+            str(r.get('number', '')),
+            str(r.get('status', '')),
+            str(r.get('created_at', '')),
+            str(r.get('pdf', '')),
+            str(r.get('items_count', '')),
+        ])
+
+    page_w, _ = letter
+    col_widths = _auto_col_widths(raw_rows, page_w)
+
+    table = Table(raw_rows, colWidths=col_widths)
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+    ]))
+    elements.append(table)
+    doc.build(elements)

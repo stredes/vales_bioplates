@@ -4,6 +4,12 @@
 import json
 import os
 from typing import Optional
+try:
+    import config as _config
+except Exception:  # fallback si no hay config en runtime
+    class _Dummy:
+        HISTORY_DIR = 'Vales_Historial'
+    _config = _Dummy()
 
 SETTINGS_FILE = 'app_settings.json'
 
@@ -79,4 +85,18 @@ def get_reminder_text() -> str:
 def set_reminder_text(text: str) -> None:
     data = _load()
     data['reminder_text'] = text
+    _save(data)
+
+
+# --- History folder preferences ---
+def get_history_dir() -> str:
+    val = _load().get('history_dir')
+    if isinstance(val, str) and val:
+        return val
+    return getattr(_config, 'HISTORY_DIR', 'Vales_Historial')
+
+
+def set_history_dir(path: str) -> None:
+    data = _load()
+    data['history_dir'] = path
     _save(data)

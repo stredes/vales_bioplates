@@ -86,15 +86,9 @@ class ValeManager:
             self._restore_stock(it)
         self.current_vale = []
 
-    def total_items(self) -> int:
-        return len(self.current_vale)
-
-    def total_quantity(self) -> int:
-        return sum(int(it['Cantidad']) for it in self.current_vale)
-
-    def generate_pdf(self, filename: str, emission_time: datetime) -> None:
-        logger.info("Generando PDF de vale: %s", filename)
-        build_vale_pdf(filename, self.current_vale, emission_time)
+    def generate_pdf(self, filename: str, vale_data_with_users: Dict, emission_time: datetime) -> None:
+        """Genera el PDF con la información del vale y usuarios."""
+        build_vale_pdf(filename, vale_data_with_users, emission_time)
 
     def serialize_current_vale(self, emission_time: datetime) -> dict:
         return {
