@@ -172,6 +172,16 @@ function New-AppPackage {
     Initialize-ToolsAndDeps -Py $Py -RequirementsFile $RequirementsFile
     if (-not (Test-Path $Entry)) { throw "No se encontrÃƒÂ³ el entrypoint: $Entry" }
 
+    if (-not $Icon) {
+        $defaultIcon = Join-Path $PSScriptRoot 'icon.ico'
+        if (Test-Path $defaultIcon) { $Icon = $defaultIcon }
+    }
+    $iconDataPath = Join-Path $PSScriptRoot 'icon.ico'
+    $sumatraCandidates = @(
+        (Join-Path $PSScriptRoot 'SumatraPDF.exe'),
+        (Join-Path (Join-Path $PSScriptRoot 'tools') 'SumatraPDF.exe')
+    )
+
     # Construir lista de argumentos estilo referencia
     $argsList = @()
     $argsList += @($Entry)
@@ -181,6 +191,13 @@ function New-AppPackage {
     $argsList += @('--noconfirm')
     if ($Console) { $argsList += @('--console') } else { $argsList += @('--windowed') }
     if ($Icon -and (Test-Path $Icon)) { $argsList += @('--icon', $Icon) }
+    if (Test-Path $iconDataPath) { $argsList += @('--add-data', "$iconDataPath;.") }
+    foreach ($sumatraPath in $sumatraCandidates) {
+        if (Test-Path $sumatraPath) {
+            $argsList += @('--add-binary', "$sumatraPath;.")
+            break
+        }
+    }
     
 # Hidden-imports necesarios
     $argsList += @('--hidden-import=reportlab')

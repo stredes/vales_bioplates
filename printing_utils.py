@@ -6,10 +6,12 @@ import os
 import subprocess
 import threading
 import time
+import sys
 from typing import Optional
 from tkinter import messagebox
 
 import config as app_config
+import settings_store as settings
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,25 @@ def _find_sumatra_exe() -> Optional[str]:
         sp = None
     if sp and os.path.exists(sp):
         return sp
-    candidates = [
+    candidates = []
+    try:
+        base_dirs = []
+        if getattr(sys, "frozen", False):
+            base_dirs.append(os.path.dirname(sys.executable))
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                base_dirs.append(meipass)
+        else:
+            base_dirs.append(os.path.dirname(os.path.abspath(__file__)))
+        for base in base_dirs:
+            candidates += [
+                os.path.join(base, "SumatraPDF.exe"),
+                os.path.join(base, "tools", "SumatraPDF.exe"),
+                os.path.join(base, "bin", "SumatraPDF.exe"),
+            ]
+    except Exception:
+        pass
+    candidates += [
         os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "SumatraPDF", "SumatraPDF.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"), "SumatraPDF", "SumatraPDF.exe"),
     ]
@@ -87,6 +107,14 @@ def print_pdf_windows(filename: str, copies: int = 1, preview: bool = False) -> 
         import win32api  # type: ignore
         import win32print  # type: ignore
 
+        # Impresora configurada (opcional)
+        try:
+            configured_printer = settings.get_printer_name()
+        except Exception:
+            configured_printer = None
+
+        printer_label = configured_printer or "impresora predeterminada"
+
         # Intento prioritario: SumatraPDF si est? disponible (evita errores de asociaci?n)
         runner_pref = None
         try:
@@ -96,22 +124,28 @@ def print_pdf_windows(filename: str, copies: int = 1, preview: bool = False) -> 
         if runner_pref:
             try:
                 if preview:
-                    cmd = [runner_pref, "-print-to-default", "-exit-on-print", filename]
+                    if configured_printer:
+                        cmd = [runner_pref, "-print-to", configured_printer, "-exit-on-print", filename]
+                    else:
+                        cmd = [runner_pref, "-print-to-default", "-exit-on-print", filename]
                     if int(copies) > 1:
                         cmd += ["-print-settings", f"copies={int(copies)}"]
                     subprocess.Popen(cmd)
                     messagebox.showinfo(
                         "Impresi?n Enviada",
-                        f"Se han enviado {copies} copias del vale a la impresora predeterminada.",
+                        f"Se han enviado {copies} copias del vale a la {printer_label}.",
                     )
                     logger.info("PDF enviado a SumatraPDF con preview copias=%s", copies)
                     return
                 for _ in range(max(1, int(copies))):
-                    cmd = [runner_pref, "-silent", "-print-to-default", filename]
+                    if configured_printer:
+                        cmd = [runner_pref, "-silent", "-print-to", configured_printer, filename]
+                    else:
+                        cmd = [runner_pref, "-silent", "-print-to-default", filename]
                     subprocess.run(cmd, check=True, creationflags=0x08000000)
                 messagebox.showinfo(
                     "Impresi?n Enviada",
-                    f"Se han enviado {copies} copias del vale a la impresora predeterminada.",
+                    f"Se han enviado {copies} copias del vale a la {printer_label}.",
                 )
                 logger.info("PDF enviado a SumatraPDF (default printer) copias=%s", copies)
                 return
@@ -120,11 +154,14 @@ def print_pdf_windows(filename: str, copies: int = 1, preview: bool = False) -> 
                 logger.warning("SumatraPDF no pudo imprimir, se intentara ShellExecute", exc_info=True)
                 pass
 
-        # Impresora predeterminada
-        try:
-            default_printer = win32print.GetDefaultPrinter()
-        except Exception:
-            default_printer = None
+        # Impresora predeterminada / configurada
+        if configured_printer:
+            default_printer = configured_printer
+        else:
+            try:
+                default_printer = win32print.GetDefaultPrinter()
+            except Exception:
+                default_printer = None
 
         if not default_printer:
             messagebox.showerror(
@@ -145,17 +182,21 @@ def print_pdf_windows(filename: str, copies: int = 1, preview: bool = False) -> 
         last_err = None
         for _ in range(max(1, int(copies))):
             try:
-                # 1) Verbo 'print'
-                win32api.ShellExecute(0, "print", filename, None, ".", 0)
+                if configured_printer:
+                    win32api.ShellExecute(0, "printto", filename, f'"{default_printer}"', ".", 0)
+                else:
+                    # 1) Verbo 'print'
+                    win32api.ShellExecute(0, "print", filename, None, ".", 0)
                 last_err = None
             except Exception as e1:
                 last_err = e1
-                # 2) Verbo 'printto' con nombre de impresora
-                try:
-                    win32api.ShellExecute(0, "printto", filename, f'"{default_printer}"', ".", 0)
-                    last_err = None
-                except Exception as e2:
-                    last_err = e2
+                if not configured_printer:
+                    # 2) Verbo 'printto' con nombre de impresora
+                    try:
+                        win32api.ShellExecute(0, "printto", filename, f'"{default_printer}"', ".", 0)
+                        last_err = None
+                    except Exception as e2:
+                        last_err = e2
 
             if last_err:
                 break
@@ -182,7 +223,8 @@ def print_pdf_windows(filename: str, copies: int = 1, preview: bool = False) -> 
                     "Error de Impresion",
                     "No hay asociacion para imprimir PDFs (error 31).\n"
                     "Soluciones: instale/establezca como predeterminado un lector PDF con soporte de impresion (Adobe Reader, SumatraPDF, etc.)\n"
-                    "o configure la asociacion de impresion para archivos PDF.",
+                    "o configure la asociacion de impresion para archivos PDF.\n"
+                    "Alternativa: coloque SumatraPDF.exe junto al ejecutable o defina SUMATRA_PDF_PATH.",
                 )
             else:
                 messagebox.showerror("Error de Impresi?n", f"Fallo al enviar a la impresora: {last_err}")
@@ -192,7 +234,7 @@ def print_pdf_windows(filename: str, copies: int = 1, preview: bool = False) -> 
             _close_preview_window(filename, delay_sec=2.0)
         messagebox.showinfo(
             "Impresi?n Enviada",
-            f"Se han enviado {copies} copias del vale a la impresora predeterminada.",
+            f"Se han enviado {copies} copias del vale a la {printer_label}.",
         )
         logger.info("PDF enviado a impresora predeterminada via ShellExecute copias=%s", copies)
     except Exception as e:

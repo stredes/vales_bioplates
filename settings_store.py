@@ -80,6 +80,18 @@ def set_sumatra_path(path: str) -> None:
     _save(data)
 
 
+# --- Printer preferences ---
+def get_printer_name() -> str | None:
+    val = _load().get('printer_name')
+    return val if isinstance(val, str) and val else None
+
+
+def set_printer_name(name: str | None) -> None:
+    data = _load()
+    data['printer_name'] = (name or "").strip()
+    _save(data)
+
+
 # --- File label reminder preferences ---
 def get_reminder_enabled() -> bool:
     return bool(_load().get('reminder_enabled', True))

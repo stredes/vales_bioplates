@@ -21,55 +21,47 @@ class FilterOptions:
     solo_con_stock: bool = False
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        out = df.copy()
+        if df is None or df.empty:
+            return df
+
+        mask = pd.Series(True, index=df.index)
 
         # Texto de producto
         term = (self.producto or "").strip().lower()
         if term:
-            out = out[out['Nombre_del_Producto'].str.lower().str.contains(term, na=False)]
+            col = df['_lc_producto'] if '_lc_producto' in df.columns else df['Nombre_del_Producto'].fillna('').astype(str).str.lower()
+            mask &= col.str.contains(term, na=False)
 
         # Subfamilia exacta
-        if self.subfamilia and self.subfamilia != '(Todas)' and 'Subfamilia' in out.columns:
-            out = out[out['Subfamilia'].astype(str) == self.subfamilia]
+        if self.subfamilia and self.subfamilia != '(Todas)' and 'Subfamilia' in df.columns:
+            col = df['_subfam'] if '_subfam' in df.columns else df['Subfamilia'].astype(str)
+            mask &= col == self.subfamilia
 
         # Lote
         lote_t = (self.lote or "").strip().lower()
-        if lote_t:
-            out = out[out['Lote'].astype(str).str.lower().str.contains(lote_t, na=False)]
+        if lote_t and 'Lote' in df.columns:
+            col = df['_lc_lote'] if '_lc_lote' in df.columns else df['Lote'].fillna('').astype(str).str.lower()
+            mask &= col.str.contains(lote_t, na=False)
 
         # Ubicacion
         ubi_t = (self.ubicacion or "").strip().lower()
-        if ubi_t and 'Ubicacion' in out.columns:
-            out = out[out['Ubicacion'].astype(str).str.lower().str.contains(ubi_t, na=False)]
+        if ubi_t and 'Ubicacion' in df.columns:
+            col = df['_lc_ubicacion'] if '_lc_ubicacion' in df.columns else df['Ubicacion'].fillna('').astype(str).str.lower()
+            mask &= col.str.contains(ubi_t, na=False)
 
         # Vencimiento rango (YYYY-MM-DD)
-        def _parse(d: str) -> Optional[datetime]:
-            try:
-                return datetime.strptime(d, '%Y-%m-%d')
-            except Exception:
-                return None
-        d1 = _parse(self.venc_desde) if self.venc_desde else None
-        d2 = _parse(self.venc_hasta) if self.venc_hasta else None
-        if d1 or d2:
-            vdt = out['Vencimiento'].astype(str)
-            vdt = vdt.where(vdt.ne('NaT'), None)
-
-            def _ok(s: str) -> bool:
-                try:
-                    t = datetime.strptime(s, '%Y-%m-%d')
-                except Exception:
-                    return False
-                if d1 and t < d1:
-                    return False
-                if d2 and t > d2:
-                    return False
-                return True
-
-            out = out[vdt.apply(_ok)]
+        d1 = pd.to_datetime(self.venc_desde, errors='coerce') if self.venc_desde else pd.NaT
+        d2 = pd.to_datetime(self.venc_hasta, errors='coerce') if self.venc_hasta else pd.NaT
+        if (pd.notna(d1) or pd.notna(d2)) and 'Vencimiento' in df.columns:
+            vdt = df['_venc_dt'] if '_venc_dt' in df.columns else pd.to_datetime(df['Vencimiento'], errors='coerce')
+            if pd.notna(d1):
+                mask &= vdt >= d1
+            if pd.notna(d2):
+                mask &= vdt <= d2
 
         # Solo con stock
-        if self.solo_con_stock and 'Stock' in out.columns:
-            out = out[out['Stock'] > 0]
+        if self.solo_con_stock and 'Stock' in df.columns:
+            mask &= df['Stock'] > 0
 
-        return out
+        return df[mask]
 

@@ -124,6 +124,19 @@ class ValeRegistry:
             self._save()
         return count
 
+    def update_entry(self, number: int, **updates: Any) -> bool:
+        changed = False
+        for e in self.data.get('vales', []):
+            if int(e.get('number', -1)) == int(number):
+                for k, v in updates.items():
+                    if e.get(k) != v:
+                        e[k] = v
+                        changed = True
+                break
+        if changed:
+            self._save()
+        return changed
+
     def find_by_number(self, number: int) -> Optional[Dict[str, Any]]:
         for e in self.data.get('vales', []):
             if int(e.get('number', -1)) == number:

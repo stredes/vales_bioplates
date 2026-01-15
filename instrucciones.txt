@@ -1,73 +1,74 @@
-Requisitos
+📌 INSTRUCCIONES RAPIDAS
 
-Windows 10/11.
-Lector de PDF instalado para ver/imprimir (recomendado: SumatraPDF o Adobe Reader).
-Si quieres impresión silenciosa desde la app, instala SumatraPDF y configúralo (ver “Impresión”).
-Ejecutar la aplicación
+✅ Requisitos
+- Windows 10/11.
+- Lector de PDF para ver/imprimir (SumatraPDF o Adobe Reader).
+- Para impresion silenciosa: SumatraPDF instalado, o SumatraPDF.exe junto al .exe, o variable SUMATRA_PDF_PATH.
 
-Abre dist/ValeConsumoBioplates.exe (se genera con el build).
-La app crea al iniciar (si no existen):
-Carpeta de vales: Vales_Historial
-Ajustes: app_settings.json junto al .exe
-Primer uso
+🚀 Ejecutar la aplicacion
+- Abrir dist\ValeConsumoBioplates.exe (se genera con el build).
+- La app crea si no existen:
+  - Carpeta: Vales_Historial
+  - Ajustes: app_settings.json junto al .exe
 
-Clic en Seleccionar archivo de inventario... y elige tu Excel (.xlsx o .xls).
-Verás la tabla de productos a la izquierda y filtros a la derecha:
-Buscar producto (texto)
-Subfamilia, Lote, Ubicacion (texto)
-Ubicaciones excluidas (checklist)
-Vencimiento desde/hasta (YYYY-MM-DD)
-Solo con stock
-Flujo para crear un vale
+🟢 Primer uso
+1) Clic en "Seleccionar archivo de inventario..." y elige tu Excel (.xlsx o .xls).
+2) Veras la tabla de productos a la izquierda y los filtros a la derecha.
 
-Selecciona un producto en la tabla.
-En “Cantidad a retirar” escribe la cantidad y pulsa Agregar al Vale.
-Repite para los productos que necesites.
-Revisa la pestaña Vale (abajo) para ver los ítems agregados:
-Puedes Eliminar Producto o Limpiar Vale.
-Pulsa Generar e Imprimir Vale:
-Se genera un PDF con el vale en Vales_Historial\vale_YYYYMMDD_HHMMSS.pdf.
-La app guarda además un .json con los datos del vale (sirve para unificaciones futuras).
-Si tienes autoimpresión activa, envía el PDF a la impresora predeterminada (ver “Impresión”).
-Historial y unificación
+🔎 Filtros disponibles
+- Buscar producto (texto).
+- Subfamilia, Lote, Ubicacion (texto).
+- Ubicaciones excluidas (checklist).
+- Vencimiento desde/hasta (YYYY-MM-DD).
+- Solo con stock.
 
-Abre la pestaña Historial (abajo).
-Acciones:
-Abrir PDF: abre el vale seleccionado.
-Reimprimir: reenvía a la impresora predeterminada.
-Unificar seleccionados: selecciona varios vales y pulsa el botón:
-Si los vales tienen .json (generados por esta versión), se crea un solo PDF con una tabla “Origen, Producto, Lote, Ubicacion, Vencimiento, Cantidad”.
-Si faltan .json (vales antiguos), se intentará concatenar los PDF.
-El unificado queda en Vales_Historial\vale_unificado_YYYYMMDD_HHMMSS.pdf.
-Impresión
+🧾 Crear una solicitud
+1) Selecciona un producto en la tabla.
+2) En "Cantidad a retirar" escribe la cantidad y pulsa "Agregar a Solicitud".
+3) Repite para los productos necesarios.
+4) Revisa la pestaña "Solicitud" (abajo). Puedes "Editar Cantidad", "Eliminar Producto" o "Limpiar Solicitud".
+5) (Opcional) "Previsualizacion": genera un PDF temporal y lo abre, NO lo guarda en historial.
+6) "Generar e Imprimir Solicitud": guarda el PDF en Vales_Historial y crea el JSON del vale.
 
-Impresión directa en Windows:
-Predeterminada: usa la asociación de impresión del sistema para .pdf.
-Si aparece “error 31” (no hay asociación de impresión):
-Define un lector PDF predeterminado con soporte de impresión (Adobe Reader, SumatraPDF, etc.), o
-Configura SumatraPDF para impresión silenciosa:
-Edita config.py (junto al .exe si lo copiaste) y fija SUMATRA_PDF_PATH con la ruta, por ejemplo:
-SUMATRA_PDF_PATH = r"C:\Program Files\SumatraPDF\SumatraPDF.exe"
-Autoimpresión:
-app_settings.json contiene "auto_print": true/false.
-Si está en true, al generar se imprime automáticamente y (además) se abre para vista previa.
-Carpetas y archivos
+📂 Historial
+- "Abrir PDF": abre el vale seleccionado.
+- "Reimprimir": reenvia a la impresora predeterminada.
+- "Unificar seleccionados":
+  - Si los vales tienen JSON, genera un PDF con tabla (Origen, Producto, Lote, Ubicacion, Vencimiento, Cantidad).
+  - Si faltan JSON (vales antiguos), concatena los PDF.
+  - El unificado queda en Vales_Historial\vale_unificado_YYYYMMDD_HHMMSS.pdf.
 
-Vales_Historial: PDFs generados, unificados y sus .json.
-app_settings.json: últimos ajustes (autoimpresión, recordatorio, etc.).
-Informe_stock_fisico.xlsx: tu archivo de inventario (no se copia automáticamente; debes seleccionarlo).
-Resolución de problemas
+🛠️ Manager Solicitudes (editar vales)
+- Solo se edita si el estado NO es "Descontado" y existe el JSON del vale.
+- Selecciona una solicitud en la lista.
+- En "Edicion de Vale":
+  - "Editar Cantidad"
+  - "Eliminar Item"
+  - "Cambiar Producto" (requiere inventario cargado)
+  - "Guardar Cambios" regenera el PDF y actualiza el JSON.
 
-No veo productos tras cargar Excel:
-Verifica que el archivo tenga columnas esperadas (Producto/Nombres, Lote, Fecha de Vencimiento, Cantidad/Stock). La app normaliza nombres comunes.
-No imprime (error 31):
-Configura app predeterminada para PDF con impresión o usa SumatraPDF (ver “Impresión”).
-Unificar muestra aviso de módulos:
-El .exe trae pypdf; si usas Python, instala con pip install pypdf. Con .exe no necesitas instalar nada.
-Unificado no muestra tabla sino concatena:
-Vales antiguos no tienen .json; vuelve a generar esos vales para que guarden datos estructurados y luego unifica de nuevo.
-Consejos
+🖨️ Impresion
+- Predeterminada: usa la asociacion de impresion de Windows para .pdf.
+- Error 31: define un lector PDF predeterminado con soporte de impresion.
+- Impresion silenciosa:
+  - Coloca SumatraPDF.exe junto al .exe, o
+  - Configura SUMATRA_PDF_PATH (variable de entorno).
+- Autoimpresion:
+  - app_settings.json contiene "auto_print": true/false.
+  - Si esta en true, imprime automaticamente y abre vista previa.
 
-Usa los filtros antes de agregar al vale; la selección no borra el filtro.
-“Recordar solicitar archivo actualizado” es un aviso visible arriba; actualiza el Excel con frecuencia para mantener stock y vencimientos al día.
-La tabla del Historial ajusta el ancho para evitar espacios en blanco; redimensiona la ventana para ver más cómodamente.
+📁 Carpetas y archivos
+- Vales_Historial: PDFs generados/unificados y sus JSON.
+- app_settings.json: ajustes (autoimpresion, recordatorio, etc.).
+- vales_index.json: indice de solicitudes y estados.
+- El inventario NO se copia: siempre debes seleccionarlo.
+
+🧯 Resolucion de problemas
+- No veo productos: verifica columnas esperadas (Producto, Lote, Fecha de Vencimiento, Cantidad/Stock).
+- No imprime (error 31): configura lector PDF o usa SumatraPDF.
+- Unificado sin tabla: los vales antiguos no tienen JSON; vuelve a generarlos.
+
+💡 Consejos
+- Actualiza el Excel con frecuencia para stock y vencimientos correctos.
+- Los filtros no se borran al seleccionar un producto.
+- Redimensiona la ventana para ver mas filas.

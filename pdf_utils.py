@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, letter
@@ -23,7 +23,13 @@ logger = logging.getLogger(__name__)
 def _para(text: str, style_name: str = "Normal") -> Paragraph:
     styles = getSampleStyleSheet()
     if style_name == "NormalWrap":
-        st = ParagraphStyle("NormalWrap", parent=styles["Normal"], fontSize=10, leading=12)
+        st = ParagraphStyle(
+            "NormalWrap",
+            parent=styles["Normal"],
+            fontSize=9,
+            leading=11,
+            wordWrap="CJK",
+        )
         return Paragraph(text.replace("&", "&amp;"), st)
     return Paragraph(text.replace("&", "&amp;"), styles[style_name])
 
@@ -43,26 +49,110 @@ def _format_date_ddmmyyyy(value) -> str:
     return text
 
 
-def _auto_col_widths(rows: Iterable[Iterable[str]], page_width: int, padd: int = 16) -> List[int]:
-    # Calcula anchos segun el contenido + padding, y ajusta al ancho disponible
+def _distribute_space(
+    widths: List[float],
+    limits: List[float],
+    weights: List[float],
+    delta: float,
+    grow: bool,
+) -> List[float]:
+    widths = list(widths)
+    remaining = float(delta)
+    for _ in range(12):
+        if remaining <= 0.5:
+            break
+        slack = []
+        for i, w in enumerate(widths):
+            limit = limits[i]
+            space = (limit - w) if grow else (w - limit)
+            if space > 0.1:
+                slack.append((i, space))
+        if not slack:
+            break
+        weight_sum = sum(weights[i] * space for i, space in slack)
+        if weight_sum <= 0:
+            break
+        moved = 0.0
+        for i, space in slack:
+            portion = remaining * (weights[i] * space) / weight_sum
+            change = min(space, portion)
+            if grow:
+                widths[i] += change
+            else:
+                widths[i] -= change
+            moved += change
+        remaining -= moved
+        if moved <= 0.1:
+            break
+    return widths
+
+
+def _auto_col_widths(
+    rows: Iterable[Iterable[str]],
+    page_width: int,
+    padd: int = 16,
+    rules: Optional[List[Dict[str, float]]] = None,
+    min_floor: float = 28.0,
+) -> List[float]:
+    # Calcula anchos segun el contenido + padding, y ajusta al ancho disponible.
     # Fuente asumida: Helvetica 10
     font_name = "Helvetica"
     font_size = 10
     n_cols = len(rows[0])
-    maxw = [0] * n_cols
+    maxw = [0.0] * n_cols
     for r in rows:
         for i, cell in enumerate(r):
             s = str(cell)
             w = stringWidth(s, font_name, font_size) + padd
             if w > maxw[i]:
                 maxw[i] = w
-    total = sum(maxw)
     avail = page_width - PDF_MARGIN_LEFT - PDF_MARGIN_RIGHT
-    if total <= avail:
-        return maxw
-    # Escalar proporcionalmente
-    scale = avail / total if total else 1.0
-    return [max(60, int(w * scale)) for w in maxw]
+    if not rules or len(rules) != n_cols:
+        total = sum(maxw)
+        if total <= avail:
+            return maxw
+        scale = avail / total if total else 1.0
+        widths = [max(min_floor, w * scale) for w in maxw]
+        over = sum(widths) - avail
+        if over > 0.5:
+            widths = _distribute_space(widths, [min_floor] * n_cols, [1.0] * n_cols, over, grow=False)
+        return widths
+
+    minw = []
+    maxw_rule = []
+    grow = []
+    shrink = []
+    for i, rule in enumerate(rules):
+        min_val = float(rule.get("min", 40))
+        max_val = float(rule.get("max", maxw[i]))
+        if max_val < min_val:
+            max_val = min_val
+        minw.append(min_val)
+        maxw_rule.append(max_val)
+        grow.append(float(rule.get("grow", 1)))
+        shrink.append(float(rule.get("shrink", 1)))
+
+    widths = []
+    for i in range(n_cols):
+        target = min(maxw[i], maxw_rule[i])
+        widths.append(max(minw[i], target))
+
+    total = sum(widths)
+    if total > avail:
+        widths = _distribute_space(widths, minw, shrink, total - avail, grow=False)
+        total = sum(widths)
+        if total > avail:
+            widths = _distribute_space(widths, [min_floor] * n_cols, shrink, total - avail, grow=False)
+            total = sum(widths)
+            if total > avail:
+                scale = avail / total if total else 1.0
+                widths = [max(min_floor, w * scale) for w in widths]
+                total = sum(widths)
+                if total > avail:
+                    widths = _distribute_space(widths, [min_floor] * n_cols, shrink, total - avail, grow=False)
+    elif total < avail:
+        widths = _distribute_space(widths, maxw_rule, grow, avail - total, grow=True)
+    return widths
 
 
 def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: datetime) -> None:
@@ -156,8 +246,8 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
     elements.append(Spacer(1, 10))
     elements.append(HRFlowable(width="100%", thickness=0.6, color=colors.lightgrey, spaceBefore=2, spaceAfter=12))
 
-    # Datos de tabla: Codigo, Producto, Lote, Ubicacion, Vencimiento, Stock, Cantidad
-    headers = ["Codigo", "Producto", "Lote", "Ubicacion", "Vencimiento", "Stock", "Cantidad"]
+    # Datos de tabla: Codigo, Producto, Lote, Bodega, Ubicacion, Vencimiento, Stock, Cantidad
+    headers = ["Codigo", "Producto", "Lote", "Bodega", "Ubicacion", "Vencimiento", "Stock", "Cantidad"]
     rows = [headers]
     for item in vale_data:
         rows.append(
@@ -165,6 +255,7 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
                 item.get("Codigo", ""),
                 item.get("Producto", ""),
                 item.get("Lote", ""),
+                item.get("Bodega", ""),
                 item.get("Ubicacion", ""),
                 _format_date_ddmmyyyy(item.get("Vencimiento", "")),
                 str(item.get("Stock", "")),
@@ -173,20 +264,28 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
         )
 
     # Anchos automÃ¡ticos
-    page_w, _ = A4
-    col_widths = _auto_col_widths(rows, page_w)
+    col_widths = [50, 130, 60, 60, 60, 65, 35, 35]
 
-    # Convertir Producto y Ubicacion a Paragraph para permitir wrap
-    table_rows = [rows[0]]
+    header_style = ParagraphStyle(
+        "HeaderWrap",
+        parent=styles["Normal"],
+        fontSize=8,
+        leading=9,
+        alignment=1,
+    )
+
+    # Convertir encabezados y celdas a Paragraph para permitir wrap
+    table_rows = [[Paragraph(h, header_style) for h in rows[0]]]
     for r in rows[1:]:
         table_rows.append([
-            r[0],                        # Codigo
+            _para(r[0], "NormalWrap"),  # Codigo
             _para(r[1], "NormalWrap"),  # Producto
-            r[2],                        # Lote
-            _para(r[3], "NormalWrap"),  # Ubicacion
-            r[4],                        # Vencimiento
-            r[5],                        # Stock
-            r[6],                        # Cantidad
+            _para(r[2], "NormalWrap"),  # Lote
+            _para(r[3], "NormalWrap"),  # Bodega
+            _para(r[4], "NormalWrap"),  # Ubicacion
+            _para(r[5], "NormalWrap"),  # Vencimiento
+            _para(r[6], "NormalWrap"),  # Stock
+            _para(r[7], "NormalWrap"),  # Cantidad
         ])
 
     table = Table(table_rows, colWidths=col_widths)
@@ -197,12 +296,16 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
                 ("ALIGN", (0, 0), (-1, -1), "CENTER"),
                 ("ALIGN", (1, 0), (1, -1), "LEFT"),  # Producto
-                ("ALIGN", (3, 0), (3, -1), "LEFT"),  # Ubicacion
+                ("ALIGN", (2, 0), (4, -1), "LEFT"),  # Lote/Bodega/Ubicacion
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-                ("FONTSIZE", (0, 0), (-1, -1), 10),
-                ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
-                ("TOPPADDING", (0, 0), (-1, 0), 6),
+                ("FONTSIZE", (0, 0), (-1, 0), 8),
+                ("FONTSIZE", (0, 1), (-1, -1), 9),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+                ("TOPPADDING", (0, 0), (-1, 0), 4),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                 ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f7f7f7")),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#ffffff"), colors.HexColor("#f1f3f6")]),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#c9c9c9")),

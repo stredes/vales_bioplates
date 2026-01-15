@@ -19,6 +19,8 @@ import threading
 import os
 import subprocess
 import sys
+import tempfile
+import time
 from datetime import datetime, timedelta
 from typing import Optional, Callable
 
@@ -39,10 +41,39 @@ MSG_SELECT_HISTORY = "Seleccione una solicitud del listado."
 MSG_SELECT_PRODUCT = "Seleccione un producto de la tabla."
 
 
+def _find_app_icon() -> Optional[str]:
+    base_dirs = []
+    try:
+        if getattr(sys, "frozen", False):
+            base_dirs.append(os.path.dirname(sys.executable))
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                base_dirs.append(meipass)
+        else:
+            base_dirs.append(os.path.dirname(os.path.abspath(__file__)))
+    except Exception:
+        base_dirs.append(os.getcwd())
+
+    candidates = []
+    for base in base_dirs:
+        candidates.append(os.path.join(base, "icon.ico"))
+        candidates.append(os.path.join(base, "assets", "icon.ico"))
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return None
+
+
 class ValeConsumoApp:
     def __init__(self, master: tk.Tk) -> None:
         self.master = master
         self.master.title("Solicitu Prod")
+        try:
+            icon_path = _find_app_icon()
+            if icon_path:
+                self.master.iconbitmap(icon_path)
+        except Exception:
+            pass
         try:
             self.master.state('zoomed')
         except Exception:
@@ -55,6 +86,10 @@ class ValeConsumoApp:
         self._load_progress_bar = None
         self._load_progress_label = None
         self._loading_inventory = False
+        self._filter_after_id = None
+        self._hist_after_id = None
+        self._mgr_after_id = None
+        self._ubic_after_id = None
         self.manager = ValeManager()
         # Carpeta de historial desde ajustes (fallback a config)
         try:
@@ -94,7 +129,7 @@ class ValeConsumoApp:
             style.configure('TCombobox', font=base_font)
             style.configure('Treeview', font=base_font, rowheight=28, background='#ffffff', fieldbackground='#ffffff')
             style.configure('Treeview.Heading', font=('Segoe UI', 10, 'bold'), padding=(8, 6), background='#f0f0f0')
-            style.map('Treeview', background=[('selected', '#e1ecff')], foreground=[('selected', '#000000')])
+            style.map('Treeview', background=[('selected', '#ffe680')], foreground=[('selected', '#000000')])
 
             # BotÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n de acciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n acentuado
             style.configure('Accent.TButton', background='#4a90e2', foreground='#ffffff')
@@ -118,8 +153,8 @@ class ValeConsumoApp:
         self.master.rowconfigure(0, weight=1)
         self.master.columnconfigure(0, weight=1)
         container.rowconfigure(0, weight=0)  # topbar
-        container.rowconfigure(1, weight=3)  # productos
-        container.rowconfigure(2, weight=4)  # vale/historial
+        container.rowconfigure(1, weight=5, minsize=320) # productos
+        container.rowconfigure(2, weight=3, minsize=260)
         container.columnconfigure(0, weight=1)
 
         # Barra superior: seleccion de archivo + recordatorio
@@ -237,11 +272,7 @@ class ValeConsumoApp:
         self._load_inventory(path)
 
     def _menu_printer_settings(self) -> None:
-        messagebox.showinfo(
-            "Impresora",
-            "Impresion automatica usa SumatraPDF si esta disponible.\n"
-            "Configure SUMATRA_PDF_PATH en config.py o settings_store si desea forzar ruta."
-        )
+        self._open_settings_dialog()
 
     def _menu_label_tools(self) -> None:
         messagebox.showinfo(
@@ -337,6 +368,7 @@ class ValeConsumoApp:
         except Exception:
             CFG_SUM = ''
         sum_var = tk.StringVar(value=(settings.get_sumatra_path() or CFG_SUM or ''))
+        printer_var = tk.StringVar(value=(settings.get_printer_name() or '(Predeterminada)'))
         rem_en_var = tk.BooleanVar(value=settings.get_reminder_enabled())
         rem_text_var = tk.StringVar(value=settings.get_reminder_text())
         hist_var = tk.StringVar(value=(settings.get_history_dir()))
@@ -349,6 +381,29 @@ class ValeConsumoApp:
         e_sum = ttk.Entry(frm, textvariable=sum_var, width=60)
         e_sum.grid(row=r, column=1, sticky='ew', padx=(8,6), pady=(8,0))
         ttk.Button(frm, text='Examinar...', command=lambda: sum_var.set(filedialog.askopenfilename(title='Seleccionar SumatraPDF.exe', filetypes=[('Ejecutable','*.exe')]) or sum_var.get())).grid(row=r, column=2, sticky='w', pady=(8,0))
+        r += 1
+
+        ttk.Label(frm, text='Impresora directa (opcional):').grid(row=r, column=0, sticky='w', pady=(8,0))
+        def _load_printers() -> list[str]:
+            items = ['(Predeterminada)']
+            try:
+                import win32print  # type: ignore
+                flags = win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
+                items += sorted({p[2] for p in win32print.EnumPrinters(flags)}, key=str.lower)
+            except Exception:
+                pass
+            return items
+
+        printers = _load_printers()
+        if printer_var.get() and printer_var.get() not in printers:
+            printers.append(printer_var.get())
+        printer_combo = ttk.Combobox(frm, textvariable=printer_var, values=printers, state='readonly', width=40)
+        printer_combo.grid(row=r, column=1, sticky='w', padx=(8,6), pady=(8,0))
+        ttk.Button(
+            frm,
+            text='Refrescar',
+            command=lambda: printer_combo.configure(values=_load_printers()),
+        ).grid(row=r, column=2, sticky='w', pady=(8,0))
         r += 1
 
         ttk.Checkbutton(frm, text='Mostrar recordatorio superior', variable=rem_en_var).grid(row=r, column=0, columnspan=3, sticky='w', pady=(8,0))
@@ -374,6 +429,8 @@ class ValeConsumoApp:
                 # Persistir
                 settings.set_auto_print(bool(ap_var.get()))
                 settings.set_sumatra_path(sum_var.get().strip())
+                selected_printer = printer_var.get().strip()
+                settings.set_printer_name(None if selected_printer in ('', '(Predeterminada)') else selected_printer)
                 settings.set_reminder_enabled(bool(rem_en_var.get()))
                 settings.set_reminder_text(rem_text_var.get())
                 new_hist = hist_var.get().strip()
@@ -752,84 +809,85 @@ class ValeConsumoApp:
         self.quantity_entry.insert(0, '1')
         self.quantity_entry.grid(row=3, column=0, sticky='w', pady=(0, 8))
         ttk.Button(self.control_frame, text="Agregar a Solicitud", style='ActionAccent.TButton', command=self.add_to_vale, width=26).grid(row=4, column=0, sticky='ew', pady=(6, 5))
-        ttk.Button(self.control_frame, text="Generar e Imprimir Solicitud", style='ActionAccent.TButton', command=self.generate_and_print_vale, width=26).grid(row=5, column=0, sticky='ew', pady=(2, 10))
+        ttk.Button(self.control_frame, text="Previsualizacion", style='Action.TButton', command=self.preview_vale, width=26).grid(row=5, column=0, sticky='ew', pady=(2, 4))
+        ttk.Button(self.control_frame, text="Generar e Imprimir Solicitud", style='ActionAccent.TButton', command=self.generate_and_print_vale, width=26).grid(row=6, column=0, sticky='ew', pady=(2, 10))
 
         # Subfamilia
-        ttk.Label(self.control_frame, text="Subfamilia:", style='Small.TLabel').grid(row=6, column=0, sticky='w', pady=(4,0))
+        ttk.Label(self.control_frame, text="Subfamilia:", style='Small.TLabel').grid(row=7, column=0, sticky='w', pady=(4,0))
         self.subfam_var = tk.StringVar(value='(Todas)')
         self.subfam_combo = ttk.Combobox(self.control_frame, textvariable=self.subfam_var, state='readonly', width=24, font=('Segoe UI', 10))  # Agregada fuente
-        self.subfam_combo.grid(row=7, column=0, sticky='ew', pady=(0, 8))
+        self.subfam_combo.grid(row=8, column=0, sticky='ew', pady=(0, 8))
         self.subfam_combo.bind('<<ComboboxSelected>>', lambda *_: self.filter_products())
 
         # Lote / Ubicacion
-        ttk.Label(self.control_frame, text="Lote:", style='Small.TLabel').grid(row=8, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Lote:", style='Small.TLabel').grid(row=9, column=0, sticky='w')
         self.lote_var = tk.StringVar()
-        ttk.Entry(self.control_frame, textvariable=self.lote_var, width=26, font=('Segoe UI', 10)).grid(row=9, column=0, sticky='ew', pady=(0, 8))
+        ttk.Entry(self.control_frame, textvariable=self.lote_var, width=26, font=('Segoe UI', 10)).grid(row=10, column=0, sticky='ew', pady=(0, 8))
 
-        ttk.Label(self.control_frame, text="Ubicacion:", style='Small.TLabel').grid(row=10, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Ubicacion:", style='Small.TLabel').grid(row=11, column=0, sticky='w')
         self.ubi_var = tk.StringVar()
-        ttk.Entry(self.control_frame, textvariable=self.ubi_var, width=26, font=('Segoe UI', 10)).grid(row=11, column=0, sticky='ew', pady=(0, 8))
+        ttk.Entry(self.control_frame, textvariable=self.ubi_var, width=26, font=('Segoe UI', 10)).grid(row=12, column=0, sticky='ew', pady=(0, 8))
 
         # Rango de vencimiento
-        ttk.Label(self.control_frame, text="Vencimiento desde (YYYY-MM-DD):", style='Small.TLabel').grid(row=12, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Vencimiento desde (YYYY-MM-DD):", style='Small.TLabel').grid(row=13, column=0, sticky='w')
         self.vdesde_var = tk.StringVar()
-        ttk.Entry(self.control_frame, textvariable=self.vdesde_var, width=26, font=('Segoe UI', 10)).grid(row=13, column=0, sticky='ew', pady=(0, 8))
-        ttk.Label(self.control_frame, text="Vencimiento hasta (YYYY-MM-DD):", style='Small.TLabel').grid(row=14, column=0, sticky='w')
+        ttk.Entry(self.control_frame, textvariable=self.vdesde_var, width=26, font=('Segoe UI', 10)).grid(row=14, column=0, sticky='ew', pady=(0, 8))
+        ttk.Label(self.control_frame, text="Vencimiento hasta (YYYY-MM-DD):", style='Small.TLabel').grid(row=15, column=0, sticky='w')
         self.vhasta_var = tk.StringVar()
-        ttk.Entry(self.control_frame, textvariable=self.vhasta_var, width=26, font=('Segoe UI', 10)).grid(row=15, column=0, sticky='ew', pady=(0, 8))
+        ttk.Entry(self.control_frame, textvariable=self.vhasta_var, width=26, font=('Segoe UI', 10)).grid(row=16, column=0, sticky='ew', pady=(0, 8))
 
         self.stock_only_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.control_frame, text='Solo con stock', variable=self.stock_only_var, command=self.filter_products).grid(row=16, column=0, sticky='w', pady=(6, 8))
+        ttk.Checkbutton(self.control_frame, text='Solo con stock', variable=self.stock_only_var, command=self.filter_products).grid(row=17, column=0, sticky='w', pady=(6, 8))
 
         # Excluir ubicaciones (checklist desplegable)
         ubic_head = ttk.Frame(self.control_frame)
-        ubic_head.grid(row=17, column=0, sticky='ew')
+        ubic_head.grid(row=18, column=0, sticky='ew')
         ubic_head.columnconfigure(0, weight=1)
         ttk.Label(ubic_head, text="Excluir ubicaciones:", style='Small.TLabel').grid(row=0, column=0, sticky='w')
         self.ubicacion_toggle_btn = ttk.Button(ubic_head, text="Mostrar", command=self._toggle_ubicaciones_checklist, width=10)
         self.ubicacion_toggle_btn.grid(row=0, column=1, sticky='e')
 
         self.ubicacion_exclude_search_var = tk.StringVar()
-        self.ubicacion_exclude_search_var.trace_add('write', lambda *_: self._render_ubicaciones_checklist())
+        self.ubicacion_exclude_search_var.trace_add('write', lambda *_: self._schedule_render_ubicaciones_checklist())
         self.ubicacion_search_entry = ttk.Entry(self.control_frame, textvariable=self.ubicacion_exclude_search_var, width=26, font=('Segoe UI', 10))
-        self.ubicacion_search_entry.grid(row=18, column=0, sticky='ew', pady=(0, 6))
+        self.ubicacion_search_entry.grid(row=19, column=0, sticky='ew', pady=(0, 6))
         self.ubicacion_checklist_frame = ttk.Frame(self.control_frame)
-        self.ubicacion_checklist_frame.grid(row=19, column=0, sticky='ew', pady=(0, 12))
+        self.ubicacion_checklist_frame.grid(row=20, column=0, sticky='ew', pady=(0, 12))
         if not self.ubicacion_checklist_visible.get():
             self.ubicacion_search_entry.grid_remove()
             self.ubicacion_checklist_frame.grid_remove()
 
         # Separador
-        ttk.Separator(self.control_frame, orient='horizontal').grid(row=20, column=0, sticky='ew', pady=(8,12))
+        ttk.Separator(self.control_frame, orient='horizontal').grid(row=21, column=0, sticky='ew', pady=(8,12))
 
         # Solicitante
-        ttk.Label(self.control_frame, text="Solicitante:", style='SmallBold.TLabel').grid(row=21, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Solicitante:", style='SmallBold.TLabel').grid(row=22, column=0, sticky='w')
         self.solicitante_var = tk.StringVar()
         self.solicitante_combo = ttk.Combobox(self.control_frame, textvariable=self.solicitante_var, width=24, font=('Segoe UI', 10))
-        self.solicitante_combo.grid(row=22, column=0, sticky='ew', pady=(0, 8))
+        self.solicitante_combo.grid(row=23, column=0, sticky='ew', pady=(0, 8))
         self._refresh_solicitantes_combo()
 
         # Usuario Bodega
-        ttk.Label(self.control_frame, text="Usuario Bodega:", style='SmallBold.TLabel').grid(row=23, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Usuario Bodega:", style='SmallBold.TLabel').grid(row=24, column=0, sticky='w')
         self.usuario_bodega_var = tk.StringVar()
         self.usuario_bodega_combo = ttk.Combobox(self.control_frame, textvariable=self.usuario_bodega_var, width=24, font=('Segoe UI', 10))
-        self.usuario_bodega_combo.grid(row=24, column=0, sticky='ew', pady=(0, 8))
+        self.usuario_bodega_combo.grid(row=25, column=0, sticky='ew', pady=(0, 8))
         self._refresh_usuarios_combo()
 
         # Cantidad de copias
-        ttk.Label(self.control_frame, text="Copias a imprimir:", style='SmallBold.TLabel').grid(row=25, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Copias a imprimir:", style='SmallBold.TLabel').grid(row=26, column=0, sticky='w')
         self.copias_var = tk.IntVar(value=1)
         copias_spinbox = ttk.Spinbox(self.control_frame, from_=1, to=10, textvariable=self.copias_var, width=12, font=('Segoe UI', 10))
-        copias_spinbox.grid(row=26, column=0, sticky='w', pady=(0, 12))
+        copias_spinbox.grid(row=27, column=0, sticky='w', pady=(0, 12))
 
         # Separador
-        ttk.Separator(self.control_frame, orient='horizontal').grid(row=27, column=0, sticky='ew', pady=(8,12))
+        ttk.Separator(self.control_frame, orient='horizontal').grid(row=28, column=0, sticky='ew', pady=(8,12))
 
         # Leyenda de vencimiento
-        ttk.Label(self.control_frame, text="Leyenda:", style='SmallBold.TLabel').grid(row=28, column=0, sticky='w')
+        ttk.Label(self.control_frame, text="Leyenda:", style='SmallBold.TLabel').grid(row=29, column=0, sticky='w')
         
         legend_frame = ttk.Frame(self.control_frame)
-        legend_frame.grid(row=29, column=0, sticky='ew', pady=(6,12))
+        legend_frame.grid(row=30, column=0, sticky='ew', pady=(6,12))
         
         vencido_lbl = tk.Label(legend_frame, text=" Vencido ", bg='#ffb3b3', fg='#b00000', font=('Segoe UI', 9), relief='solid', borderwidth=1, pady=4)
         vencido_lbl.pack(fill='x', pady=3)
@@ -838,9 +896,9 @@ class ValeConsumoApp:
         estable_lbl = tk.Label(legend_frame, text=" Fecha estable ", bg='#ffffff', fg='#333333', font=('Segoe UI', 9), relief='solid', borderwidth=1, pady=4)
         estable_lbl.pack(fill='x', pady=3)
         # Limpiar filtros
-        ttk.Button(self.control_frame, text="Limpiar filtros", command=self._clear_filters, width=26).grid(row=30, column=0, sticky='ew', pady=(4, 4))
+        ttk.Button(self.control_frame, text="Limpiar filtros", command=self._clear_filters, width=26).grid(row=31, column=0, sticky='ew', pady=(4, 4))
 
-        for i in range(0, 31):
+        for i in range(0, 32):
             self.control_frame.rowconfigure(i, weight=0)
         self.control_frame.columnconfigure(0, weight=1)
 
@@ -933,7 +991,16 @@ class ValeConsumoApp:
         self.ubicacion_exclude_vars = new_vars
         self._render_ubicaciones_checklist()
 
+    def _schedule_render_ubicaciones_checklist(self) -> None:
+        if self._ubic_after_id:
+            try:
+                self.master.after_cancel(self._ubic_after_id)
+            except Exception:
+                pass
+        self._ubic_after_id = self.master.after(250, self._render_ubicaciones_checklist)
+
     def _render_ubicaciones_checklist(self) -> None:
+        self._ubic_after_id = None
         frame = getattr(self, 'ubicacion_checklist_frame', None)
         if not frame:
             return
@@ -1086,6 +1153,7 @@ class ValeConsumoApp:
         self.vale_actions_frame.grid(row=0, column=1, sticky='ns', padx=(8, 0))
         ttk.Button(self.vale_actions_frame, text="Editar Cantidad", command=self.edit_vale_item, width=26, style='Action.TButton').pack(pady=8, fill='x')
         ttk.Button(self.vale_actions_frame, text="Eliminar Producto", command=self.remove_from_vale, width=26, style='Action.TButton').pack(pady=8, fill='x')
+        ttk.Button(self.vale_actions_frame, text="Previsualizacion", command=self.preview_vale, width=26, style='Action.TButton').pack(pady=8, fill='x')
         ttk.Button(self.vale_actions_frame, text="Generar e Imprimir Solicitud", command=self.generate_and_print_vale, width=26, style='Action.TButton').pack(pady=8, fill='x')
         ttk.Button(self.vale_actions_frame, text="Limpiar Solicitud", command=self.clear_vale, width=26, style='Action.TButton').pack(pady=8, fill='x')
 
@@ -1123,7 +1191,7 @@ class ValeConsumoApp:
         self.hist_search_var = tk.StringVar(value='')
         hist_entry = ttk.Entry(top, textvariable=self.hist_search_var, width=32, font=('Segoe UI', 10))
         hist_entry.pack(side='left', padx=(6, 0))
-        self.hist_search_var.trace_add('write', lambda *_: self.refresh_history())
+        self.hist_search_var.trace_add('write', lambda *_: self._schedule_refresh_history())
 
         # Historial basado en el registro: Numero, Estado, Fecha, Archivo, Items
         cols = ("Numero", "Estado", "Fecha", "Archivo", "Items")
@@ -1185,7 +1253,16 @@ class ValeConsumoApp:
             os.makedirs(HISTORY_DIR, exist_ok=True)
             self.log.debug("Creada carpeta de historial en %s", HISTORY_DIR)
 
+    def _schedule_refresh_history(self) -> None:
+        if self._hist_after_id:
+            try:
+                self.master.after_cancel(self._hist_after_id)
+            except Exception:
+                pass
+        self._hist_after_id = self.master.after(200, self.refresh_history)
+
     def refresh_history(self) -> None:
+        self._hist_after_id = None
         # Cargar desde el registro; si esta vacio y existen PDFs, reindexar primero
         for i in self.history_tree.get_children():
             self.history_tree.delete(i)
@@ -1648,7 +1725,23 @@ class ValeConsumoApp:
         if self._loading_inventory:
             self.master.after(120, lambda: self._poll_load_queue(path))
 
+    def _prepare_inventory_cache(self, df: pd.DataFrame) -> None:
+        try:
+            if '_lc_producto' not in df.columns and 'Nombre_del_Producto' in df.columns:
+                df['_lc_producto'] = df['Nombre_del_Producto'].fillna('').astype(str).str.lower()
+            if '_lc_lote' not in df.columns and 'Lote' in df.columns:
+                df['_lc_lote'] = df['Lote'].fillna('').astype(str).str.lower()
+            if '_lc_ubicacion' not in df.columns and 'Ubicacion' in df.columns:
+                df['_lc_ubicacion'] = df['Ubicacion'].fillna('').astype(str).str.lower()
+            if '_subfam' not in df.columns and 'Subfamilia' in df.columns:
+                df['_subfam'] = df['Subfamilia'].astype(str)
+            if '_venc_dt' not in df.columns and 'Vencimiento' in df.columns:
+                df['_venc_dt'] = pd.to_datetime(df['Vencimiento'], errors='coerce')
+        except Exception:
+            pass
+
     def _populate_subfamilies(self, df: pd.DataFrame) -> None:
+        self._prepare_inventory_cache(df)
         try:
             uniq = sorted([x for x in pd.Series(df.get('Subfamilia', [])).dropna().astype(str).unique() if x])
             self.subfam_combo['values'] = ['(Todas)'] + uniq
@@ -1657,14 +1750,34 @@ class ValeConsumoApp:
         self.subfam_combo.set('(Todas)')
 
         self._refresh_ubicaciones_checklist()
-        self.filter_products()
+        self.filter_products(immediate=True)
 
-    def filter_products(self) -> None:
+    def filter_products(self, immediate: bool = False) -> None:
+        if immediate:
+            if self._filter_after_id:
+                try:
+                    self.master.after_cancel(self._filter_after_id)
+                except Exception:
+                    pass
+                self._filter_after_id = None
+            self._apply_filters_now()
+            return
+        if self._filter_after_id:
+            try:
+                self.master.after_cancel(self._filter_after_id)
+            except Exception:
+                pass
+        self._filter_after_id = self.master.after(250, self._apply_filters_now)
+
+    def _apply_filters_now(self) -> None:
+        self._filter_after_id = None
         df = self.manager.bioplates_inventory
         if df is None or df.empty:
             self._populate_products(pd.DataFrame())
             self.log.info("Filtros aplicados sin inventario cargado")
             return
+        if '_lc_producto' not in df.columns:
+            self._prepare_inventory_cache(df)
         search_term = self.search_var.get().strip()
         opts = FilterOptions(
             producto=search_term,
@@ -1679,11 +1792,14 @@ class ValeConsumoApp:
             out = opts.apply(df)
         except Exception as exc:
             self.log.error("Filtro fallo, se muestra inventario completo: %s", exc)
-            out = df.copy()
+            out = df
         excluded = self._get_excluded_ubicaciones()
         if excluded and 'Ubicacion' in out.columns:
             excluded_set = {str(x).strip().lower() for x in excluded}
-            out = out[~out['Ubicacion'].fillna('').astype(str).str.strip().str.lower().isin(excluded_set)]
+            if '_lc_ubicacion' in out.columns:
+                out = out[~out['_lc_ubicacion'].isin(excluded_set)]
+            else:
+                out = out[~out['Ubicacion'].fillna('').astype(str).str.strip().str.lower().isin(excluded_set)]
         if search_term:
             out = self._sort_by_proximidad(out)
         self.filtered_df = out
@@ -1718,78 +1834,62 @@ class ValeConsumoApp:
     def _sort_by_proximidad(self, df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty or 'Vencimiento' not in df.columns:
             return df
-        today = datetime.now().date()
-        parsed = df['Vencimiento'].apply(self._parse_vencimiento_value)
-        productos = df['Nombre_del_Producto'].fillna('').astype(str).str.strip().str.lower()
-        earliest_by_producto = {}
-        for prod, venc_date in zip(productos, parsed):
-            if not prod or not venc_date:
-                continue
-            prev = earliest_by_producto.get(prod)
-            if not prev or venc_date < prev:
-                earliest_by_producto[prod] = venc_date
-        proximo_flags = []
-        days_list = []
-        for prod, venc_date in zip(productos, parsed):
-            if prod and venc_date and venc_date == earliest_by_producto.get(prod):
-                proximo_flags.append(1)
-                days_list.append((venc_date - today).days)
-            else:
-                proximo_flags.append(0)
-                days_list.append(999999)
+        venc_dt = df['_venc_dt'] if '_venc_dt' in df.columns else pd.to_datetime(df['Vencimiento'], errors='coerce')
+        productos = df['_lc_producto'] if '_lc_producto' in df.columns else df['Nombre_del_Producto'].fillna('').astype(str).str.lower()
+        valid = productos.ne('') & venc_dt.notna()
+        if not valid.any():
+            return df
+        earliest = venc_dt.where(valid).groupby(productos).transform('min')
+        is_earliest = valid & (venc_dt == earliest)
+        today = pd.Timestamp(datetime.now().date())
+        days = (venc_dt - today).dt.days
+        days = days.where(is_earliest, 999999)
         out = df.copy()
-        out['_proximo'] = proximo_flags
-        out['_days'] = days_list
+        out['_is_earliest'] = is_earliest.astype(int)
+        out['_days'] = days
         out['_orig'] = range(len(out))
-        out = out.sort_values(by=['_proximo', '_days', '_orig'], ascending=[False, True, True], kind='mergesort')
-        return out.drop(columns=['_proximo', '_days', '_orig'])
+        out = out.sort_values(by=['_is_earliest', '_days', '_orig'], ascending=[False, True, True], kind='mergesort')
+        return out.drop(columns=['_is_earliest', '_days', '_orig'])
 
     def _populate_products(self, df: pd.DataFrame) -> None:
-        for i in self.product_tree.get_children():
-            self.product_tree.delete(i)
+        children = self.product_tree.get_children()
+        if children:
+            self.product_tree.delete(*children)
         if df is None or df.empty:
             return
 
-        today = datetime.now().date()
-        earliest_by_producto = {}
-        parsed_dates = {}
-        for idx, row in df.iterrows():
-            producto = str(row.get('Nombre_del_Producto', '')).strip()
-            producto_key = producto.lower()
-            venc_date = self._parse_vencimiento_value(row.get('Vencimiento', ''))
-            parsed_dates[idx] = venc_date
-            if producto_key and venc_date:
-                prev = earliest_by_producto.get(producto_key)
-                if not prev or venc_date < prev:
-                    earliest_by_producto[producto_key] = venc_date
+        if '_lc_producto' not in df.columns or '_venc_dt' not in df.columns:
+            self._prepare_inventory_cache(df)
+        venc_dt = df['_venc_dt'] if '_venc_dt' in df.columns else pd.to_datetime(df['Vencimiento'], errors='coerce')
+        productos = df['_lc_producto'] if '_lc_producto' in df.columns else df['Nombre_del_Producto'].fillna('').astype(str).str.lower()
+        valid = productos.ne('') & venc_dt.notna()
+        if valid.any():
+            earliest = venc_dt.where(valid).groupby(productos).transform('min')
+            is_earliest = valid & (venc_dt == earliest)
+            today = pd.Timestamp(datetime.now().date())
+            days = (venc_dt - today).dt.days
+        else:
+            is_earliest = pd.Series([False] * len(df), index=df.index)
+            days = pd.Series([999999] * len(df), index=df.index)
 
-        for idx, row in df.iterrows():
-            values = [
-                row.get('Nombre_del_Producto', ''),
-                row.get('Codigo', ''),
-                row.get('Lote', ''),
-                row.get('Bodega', ''),
-                row.get('Ubicacion', ''),
-                row.get('Vencimiento', ''),
-                row.get('Stock', ''),
-            ]
-
-            # Determinar vencimiento (rojo vencido, azul proximo) solo para el mas proximo por producto
-            tags = []
-            venc_date = parsed_dates.get(idx)
-            producto = str(row.get('Nombre_del_Producto', '')).strip()
-            producto_key = producto.lower()
-            if producto_key and venc_date and venc_date == earliest_by_producto.get(producto_key):
+        cols = ['Nombre_del_Producto', 'Codigo', 'Lote', 'Bodega', 'Ubicacion', 'Vencimiento', 'Stock']
+        values_df = df[cols]
+        is_earliest_vals = is_earliest.values
+        days_vals = days.values
+        for pos, row in enumerate(values_df.itertuples(index=True, name=None)):
+            idx = row[0]
+            values = row[1:]
+            tag = None
+            if pos < len(is_earliest_vals) and is_earliest_vals[pos]:
                 try:
-                    dias_restantes = (venc_date - today).days
-                    if dias_restantes < 0:
-                        tags.append('vencido')
-                    else:
-                        tags.append('vencimiento_proximo')
+                    tag = 'vencido' if days_vals[pos] < 0 else 'vencimiento_proximo'
                 except Exception:
-                    pass
-            
-            self.product_tree.insert('', 'end', iid=str(int(idx)), values=values, tags=tuple(tags) if tags else ())
+                    tag = None
+            try:
+                iid = str(int(idx))
+            except Exception:
+                iid = str(idx)
+            self.product_tree.insert('', 'end', iid=iid, values=values, tags=(tag,) if tag else ())
         
         self._apply_stripes(self.product_tree)
 
@@ -1845,26 +1945,62 @@ class ValeConsumoApp:
 
     # --------------- Manager de Vales ---------------
     def _build_manager_ui(self) -> None:
-        frame = ttk.Frame(self.mgr_tab, padding=12)
-        frame.pack(fill='both', expand=True)
+        outer = ttk.Frame(self.mgr_tab)
+        outer.pack(fill='both', expand=True)
+
+        mgr_canvas = tk.Canvas(outer, borderwidth=0, highlightthickness=0)
+        mgr_vsb = ttk.Scrollbar(outer, orient='vertical', command=mgr_canvas.yview)
+        mgr_canvas.configure(yscrollcommand=mgr_vsb.set)
+        mgr_vsb.pack(side='right', fill='y')
+        mgr_canvas.pack(side='left', fill='both', expand=True)
+
+        frame = ttk.Frame(mgr_canvas, padding=12)
+        mgr_window = mgr_canvas.create_window((0, 0), window=frame, anchor='nw')
+
+        def _sync_scroll_region(_: 'tk.Event') -> None:
+            try:
+                mgr_canvas.configure(scrollregion=mgr_canvas.bbox('all'))
+            except Exception:
+                pass
+
+        def _fit_canvas_width(event: 'tk.Event') -> None:
+            try:
+                mgr_canvas.itemconfigure(mgr_window, width=event.width)
+            except Exception:
+                pass
+
+        frame.bind('<Configure>', _sync_scroll_region)
+        mgr_canvas.bind('<Configure>', _fit_canvas_width)
+        outer.bind('<Enter>', lambda _: self._bind_filter_mousewheel(mgr_canvas))
+        outer.bind('<Leave>', lambda _: mgr_canvas.unbind_all('<MouseWheel>'))
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(1, weight=1)
+        frame.rowconfigure(1, weight=2, minsize=140)
+        frame.rowconfigure(3, weight=3, minsize=200)
+        frame.rowconfigure(3, weight=1)
 
-        # Filtros superiores (estado)
+        # Filtros superiores (estado + busqueda)
         top = ttk.Frame(frame)
-        top.grid(row=0, column=0, sticky='ew', pady=(0,8))
-        ttk.Label(top, text='Estado:', font=('Segoe UI', 10)).pack(side='left')
+        top.grid(row=0, column=0, columnspan=2, sticky='ew', pady=(0, 8))
+        top.columnconfigure(4, weight=1)
+        ttk.Label(top, text='Estado:', font=('Segoe UI', 10)).grid(row=0, column=0, sticky='w')
         self.mgr_estado = tk.StringVar(value='(Todos)')
-        ttk.Combobox(top, textvariable=self.mgr_estado, values=['(Todos)','Pendiente','Descontado','Anulado'], state='readonly', width=14, font=('Segoe UI', 10)).pack(side='left', padx=(6,12))
-        ttk.Button(top, text='Actualizar', command=self.refresh_manager).pack(side='left')
-        ttk.Button(top, text='Reindexar', command=self._mgr_reindex).pack(side='left', padx=(12,0))
+        ttk.Combobox(
+            top,
+            textvariable=self.mgr_estado,
+            values=['(Todos)', 'Pendiente', 'Descontado', 'Anulado'],
+            state='readonly',
+            width=14,
+            font=('Segoe UI', 10),
+        ).grid(row=0, column=1, sticky='w', padx=(6, 12))
+        ttk.Button(top, text='Actualizar', command=self.refresh_manager).grid(row=0, column=2, sticky='w')
+        ttk.Button(top, text='Reindexar', command=self._mgr_reindex).grid(row=0, column=3, sticky='w', padx=(8, 0))
 
-        # Búsqueda
-        ttk.Label(top, text=' Buscar:', font=('Segoe UI', 10)).pack(side='left', padx=(12,0))
+        ttk.Label(top, text='Buscar:', font=('Segoe UI', 10)).grid(row=0, column=5, sticky='e', padx=(0, 6))
         self.mgr_search_var = tk.StringVar(value='')
         e_msrch = ttk.Entry(top, textvariable=self.mgr_search_var, width=28, font=('Segoe UI', 10))
-        e_msrch.pack(side='left', padx=(6,0))
-        self.mgr_search_var.trace_add('write', lambda *_: self.refresh_manager())
+        e_msrch.grid(row=0, column=6, sticky='e')
+        self.mgr_search_var.trace_add('write', lambda *_: self._schedule_refresh_manager())
+
 
         cols = ("Numero","Estado","Fecha","Archivo","Items")
         self.mgr_tree = ttk.Treeview(frame, columns=cols, show='headings', selectmode='extended')
@@ -1888,16 +2024,78 @@ class ValeConsumoApp:
 
         # Acciones
         act = ttk.Frame(frame)
-        act.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(10,0))
-        ttk.Button(act, text='Marcar Pendiente', command=lambda: self._mgr_set_status('Pendiente')).pack(side='left', padx=(0,8))
-        ttk.Button(act, text='Marcar Descontado', command=lambda: self._mgr_set_status('Descontado')).pack(side='left', padx=(0,8))
-        ttk.Button(act, text='Marcar Anulado', command=lambda: self._mgr_set_status('Anulado')).pack(side='left', padx=(0,8))
-        ttk.Button(act, text='Listado PDF (Pendientes)', command=lambda: self._mgr_export_pdf('Pendiente')).pack(side='right', padx=(8,0))
-        ttk.Button(act, text='Listado PDF (Descontados)', command=lambda: self._mgr_export_pdf('Descontado')).pack(side='right', padx=(8,0))
-        ttk.Button(act, text='Exportar Excel (Pendientes)', command=lambda: self._mgr_export_excel('Pendiente')).pack(side='right', padx=(8,0))
-        ttk.Button(act, text='Exportar Excel (Descontados)', command=lambda: self._mgr_export_excel('Descontado')).pack(side='right', padx=(8,0))
+        act.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(6, 0))
+        act.columnconfigure(0, weight=1)
+        act.columnconfigure(1, weight=1)
+
+        status_box = ttk.LabelFrame(act, text='Estado', padding=(8, 6))
+        status_box.grid(row=0, column=0, sticky='w')
+        ttk.Button(status_box, text='Marcar Pendiente', command=lambda: self._mgr_set_status('Pendiente')).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(status_box, text='Marcar Descontado', command=lambda: self._mgr_set_status('Descontado')).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(status_box, text='Marcar Anulado', command=lambda: self._mgr_set_status('Anulado')).grid(row=0, column=2)
+
+        export_box = ttk.LabelFrame(act, text='Exportar / Reportes', padding=(8, 6))
+        export_box.grid(row=0, column=1, sticky='e')
+        ttk.Button(export_box, text='Exportar Excel (Descontados)', command=lambda: self._mgr_export_excel('Descontado')).grid(row=0, column=0, padx=(0, 8), pady=(0, 6))
+        ttk.Button(export_box, text='Exportar Excel (Pendientes)', command=lambda: self._mgr_export_excel('Pendiente')).grid(row=0, column=1, pady=(0, 6))
+        ttk.Button(export_box, text='Listado PDF (Descontados)', command=lambda: self._mgr_export_pdf('Descontado')).grid(row=1, column=0, padx=(0, 8))
+        ttk.Button(export_box, text='Listado PDF (Pendientes)', command=lambda: self._mgr_export_pdf('Pendiente')).grid(row=1, column=1)
+
+
+        # Editor de vale seleccionado (solo si no esta Descontado)
+        editor = ttk.LabelFrame(frame, text='Edicion de Vale (no descontado)', padding=8)
+        editor.grid(row=3, column=0, columnspan=2, sticky='nsew', pady=(10, 0))
+        editor.columnconfigure(0, weight=1)
+        editor.rowconfigure(1, weight=1)
+
+        self.mgr_edit_info = tk.StringVar(value='Seleccione una solicitud pendiente para editar.')
+        ttk.Label(editor, textvariable=self.mgr_edit_info, font=('Segoe UI', 9)).grid(row=0, column=0, sticky='w', pady=(0, 6))
+
+        item_cols = ("Producto", "Codigo", "Lote", "Bodega", "Ubicacion", "Vencimiento", "Stock", "Cantidad")
+        self.mgr_items_tree = ttk.Treeview(editor, columns=item_cols, show='headings', selectmode='browse', height=10)
+        for c, w, anc in (
+            ("Producto", 220, 'w'),
+            ("Codigo", 80, 'center'),
+            ("Lote", 120, 'center'),
+            ("Bodega", 120, 'center'),
+            ("Ubicacion", 110, 'center'),
+            ("Vencimiento", 100, 'center'),
+            ("Stock", 70, 'center'),
+            ("Cantidad", 80, 'center'),
+        ):
+            self.mgr_items_tree.heading(c, text=c)
+            self.mgr_items_tree.column(c, width=w, anchor=anc, stretch=(c == "Producto"))
+        self.mgr_items_tree.grid(row=1, column=0, sticky='nsew')
+        editor_vbar = ttk.Scrollbar(editor, orient='vertical', command=self.mgr_items_tree.yview)
+        editor_vbar.grid(row=1, column=1, sticky='ns')
+        self.mgr_items_tree.configure(yscrollcommand=editor_vbar.set)
+
+        edit_btns = ttk.Frame(editor)
+        edit_btns.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(8, 0))
+        self.mgr_btn_edit_qty = ttk.Button(edit_btns, text='Editar Cantidad', command=self._mgr_edit_item_qty)
+        self.mgr_btn_remove_item = ttk.Button(edit_btns, text='Eliminar Item', command=self._mgr_remove_item)
+        self.mgr_btn_change_product = ttk.Button(edit_btns, text='Cambiar Producto', command=self._mgr_change_item_product)
+        self.mgr_btn_save_edit = ttk.Button(edit_btns, text='Guardar Cambios', command=self._mgr_save_edit)
+        self.mgr_btn_reload_edit = ttk.Button(edit_btns, text='Recargar', command=self._mgr_load_selected_vale)
+        self.mgr_btn_edit_qty.pack(side='left', padx=(0, 8))
+        self.mgr_btn_remove_item.pack(side='left', padx=(0, 8))
+        self.mgr_btn_change_product.pack(side='left', padx=(0, 8))
+        self.mgr_btn_save_edit.pack(side='left', padx=(0, 8))
+        self.mgr_btn_reload_edit.pack(side='left', padx=(0, 8))
+
+        self._mgr_clear_editor()
+        self.mgr_tree.bind('<<TreeviewSelect>>', lambda _e: self._mgr_load_selected_vale())
+
+    def _schedule_refresh_manager(self) -> None:
+        if self._mgr_after_id:
+            try:
+                self.master.after_cancel(self._mgr_after_id)
+            except Exception:
+                pass
+        self._mgr_after_id = self.master.after(200, self.refresh_manager)
 
     def refresh_manager(self) -> None:
+        self._mgr_after_id = None
         try:
             for i in self.mgr_tree.get_children():
                 self.mgr_tree.delete(i)
@@ -1929,6 +2127,358 @@ class ValeConsumoApp:
             self._apply_stripes(self.mgr_tree)
         except Exception:
             pass
+
+    def _mgr_clear_editor(self) -> None:
+        self._mgr_edit_number = None
+        self._mgr_edit_status = None
+        self._mgr_edit_items = []
+        self._mgr_edit_payload = {}
+        self._mgr_edit_json_path = None
+        self._mgr_edit_pdf_path = None
+        try:
+            for i in self.mgr_items_tree.get_children():
+                self.mgr_items_tree.delete(i)
+        except Exception:
+            pass
+        try:
+            self.mgr_edit_info.set('Seleccione una solicitud pendiente para editar.')
+        except Exception:
+            pass
+        self._mgr_set_edit_state(False)
+
+    def _mgr_set_edit_state(self, enabled: bool) -> None:
+        state = 'normal' if enabled else 'disabled'
+        try:
+            self.mgr_btn_edit_qty.configure(state=state)
+            self.mgr_btn_remove_item.configure(state=state)
+            self.mgr_btn_change_product.configure(state=state)
+            self.mgr_btn_save_edit.configure(state=state)
+        except Exception:
+            pass
+
+    def _mgr_render_items(self) -> None:
+        try:
+            for i in self.mgr_items_tree.get_children():
+                self.mgr_items_tree.delete(i)
+        except Exception:
+            pass
+        for i, item in enumerate(self._mgr_edit_items):
+            values = (
+                item.get("Producto", ""),
+                item.get("Codigo", ""),
+                item.get("Lote", ""),
+                item.get("Bodega", ""),
+                item.get("Ubicacion", ""),
+                item.get("Vencimiento", ""),
+                item.get("Stock", ""),
+                item.get("Cantidad", ""),
+            )
+            self.mgr_items_tree.insert('', 'end', iid=f'it-{i}', values=values)
+
+    def _mgr_load_selected_vale(self) -> None:
+        nums = self._mgr_selected_numbers()
+        if not nums:
+            self._mgr_clear_editor()
+            return
+        number = nums[0]
+        entry = self.registry.find_by_number(number)
+        if not entry:
+            self._mgr_clear_editor()
+            return
+        status = str(entry.get('status', ''))
+        pdf_name = str(entry.get('pdf', ''))
+        json_name = str(entry.get('json', ''))
+        json_path = os.path.join(self.history_dir, json_name) if json_name else ''
+        if not json_path or not os.path.exists(json_path):
+            base = os.path.splitext(pdf_name)[0]
+            candidate = os.path.join(self.history_dir, base + '.json') if base else ''
+            if candidate and os.path.exists(candidate):
+                json_path = candidate
+        payload = {}
+        items = []
+        if json_path and os.path.exists(json_path):
+            try:
+                import json
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    payload = json.load(f)
+                raw_items = payload.get('items', [])
+                if isinstance(raw_items, list):
+                    items = [dict(it) for it in raw_items]
+            except Exception:
+                payload = {}
+                items = []
+
+        self._mgr_edit_number = number
+        self._mgr_edit_status = status
+        self._mgr_edit_payload = payload
+        self._mgr_edit_items = items
+        self._mgr_edit_json_path = json_path
+        self._mgr_edit_pdf_path = os.path.join(self.history_dir, pdf_name) if pdf_name else ''
+        self._mgr_render_items()
+
+        info = f"Solicitud N° {number} - Estado: {status}"
+        if status == 'Descontado':
+            info += " (no editable)"
+        if not json_path:
+            info += " - sin JSON"
+        try:
+            self.mgr_edit_info.set(info)
+        except Exception:
+            pass
+        self._mgr_set_edit_state(status != 'Descontado' and bool(json_path))
+
+    def _mgr_edit_item_qty(self) -> None:
+        sel = self.mgr_items_tree.focus()
+        if not sel or not sel.startswith('it-'):
+            messagebox.showwarning('Editar', 'Seleccione un item del vale.')
+            return
+        try:
+            idx = int(sel.split('-')[1])
+            item = self._mgr_edit_items[idx]
+            current_qty = int(item.get('Cantidad', 0))
+        except Exception:
+            messagebox.showerror('Editar', 'No se pudo leer el item seleccionado.')
+            return
+        new_qty = simpledialog.askinteger(
+            "Editar Cantidad",
+            "Nueva cantidad:",
+            initialvalue=current_qty,
+            minvalue=1,
+        )
+        if new_qty is None:
+            return
+        item['Cantidad'] = int(new_qty)
+        self._mgr_render_items()
+
+    def _mgr_remove_item(self) -> None:
+        sel = self.mgr_items_tree.focus()
+        if not sel or not sel.startswith('it-'):
+            messagebox.showwarning('Eliminar', 'Seleccione un item del vale.')
+            return
+        try:
+            idx = int(sel.split('-')[1])
+        except Exception:
+            messagebox.showerror('Eliminar', 'No se pudo leer el item seleccionado.')
+            return
+        if not messagebox.askyesno('Eliminar', 'Desea eliminar el item seleccionado del vale?'):
+            return
+        try:
+            self._mgr_edit_items.pop(idx)
+        except Exception:
+            messagebox.showerror('Eliminar', 'No se pudo eliminar el item.')
+            return
+        self._mgr_render_items()
+
+    def _mgr_change_item_product(self) -> None:
+        sel = self.mgr_items_tree.focus()
+        if not sel or not sel.startswith('it-'):
+            messagebox.showwarning('Cambiar Producto', 'Seleccione un item del vale.')
+            return
+        try:
+            item_idx = int(sel.split('-')[1])
+        except Exception:
+            messagebox.showerror('Cambiar Producto', 'No se pudo leer el item seleccionado.')
+            return
+
+        df = getattr(self.manager, 'bioplates_inventory', None)
+        if df is None or df.empty:
+            messagebox.showwarning('Cambiar Producto', 'Debe cargar el inventario primero.')
+            return
+
+        def _clean(val) -> str:
+            try:
+                if pd.isna(val):
+                    return ""
+            except Exception:
+                pass
+            return str(val)
+
+        dlg = tk.Toplevel(self.master)
+        dlg.title('Seleccionar producto')
+        dlg.transient(self.master)
+        dlg.grab_set()
+        dlg.geometry('920x520')
+
+        top = ttk.Frame(dlg, padding=10)
+        top.pack(fill='x')
+        ttk.Label(top, text='Buscar:', font=('Segoe UI', 10)).pack(side='left')
+        search_var = tk.StringVar(value='')
+        search_entry = ttk.Entry(top, textvariable=search_var, width=40, font=('Segoe UI', 10))
+        search_entry.pack(side='left', padx=(8, 0))
+
+        info_var = tk.StringVar(value='Mostrando hasta 500 resultados.')
+        ttk.Label(top, textvariable=info_var, font=('Segoe UI', 9)).pack(side='right')
+
+        cols = ("Producto", "Codigo", "Lote", "Bodega", "Ubicacion", "Vencimiento", "Stock")
+        tree_frame = ttk.Frame(dlg)
+        tree_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+        tree = ttk.Treeview(tree_frame, columns=cols, show='headings', selectmode='browse')
+        for c, w, anc in (
+            ("Producto", 320, 'w'),
+            ("Codigo", 90, 'center'),
+            ("Lote", 120, 'center'),
+            ("Bodega", 140, 'center'),
+            ("Ubicacion", 120, 'center'),
+            ("Vencimiento", 110, 'center'),
+            ("Stock", 70, 'center'),
+        ):
+            tree.heading(c, text=c)
+            tree.column(c, width=w, anchor=anc, stretch=(c == "Producto"))
+        tree.grid(row=0, column=0, sticky='nsew')
+        vbar = ttk.Scrollbar(tree_frame, orient='vertical', command=tree.yview)
+        vbar.grid(row=0, column=1, sticky='ns')
+        tree.configure(yscrollcommand=vbar.set)
+
+        def _filter_rows(term: str) -> pd.DataFrame:
+            if not term:
+                return df
+            term_l = term.lower()
+            mask = (
+                df["Nombre_del_Producto"].astype(str).str.lower().str.contains(term_l, na=False)
+                | df["Codigo"].astype(str).str.lower().str.contains(term_l, na=False)
+                | df["Lote"].astype(str).str.lower().str.contains(term_l, na=False)
+                | df["Bodega"].astype(str).str.lower().str.contains(term_l, na=False)
+                | df["Ubicacion"].astype(str).str.lower().str.contains(term_l, na=False)
+            )
+            return df[mask]
+
+        def _render(term: str = "") -> None:
+            try:
+                for iid in tree.get_children():
+                    tree.delete(iid)
+            except Exception:
+                pass
+            result = _filter_rows(term)
+            limited = result.head(500)
+            info_var.set(f"Mostrando {len(limited)} de {len(result)} resultados.")
+            for idx, row in limited.iterrows():
+                tree.insert(
+                    '',
+                    'end',
+                    iid=str(idx),
+                    values=(
+                        _clean(row.get("Nombre_del_Producto", "")),
+                        _clean(row.get("Codigo", "")),
+                        _clean(row.get("Lote", "")),
+                        _clean(row.get("Bodega", "")),
+                        _clean(row.get("Ubicacion", "")),
+                        _clean(row.get("Vencimiento", "")),
+                        _clean(row.get("Stock", "")),
+                    ),
+                )
+
+        def _apply_selection() -> None:
+            sel_iid = tree.focus()
+            if not sel_iid:
+                messagebox.showwarning('Cambiar Producto', 'Seleccione un producto.')
+                return
+            try:
+                row_idx = int(sel_iid)
+            except Exception:
+                row_idx = sel_iid
+            try:
+                row = df.loc[row_idx]
+            except Exception:
+                messagebox.showerror('Cambiar Producto', 'No se pudo leer el producto seleccionado.')
+                return
+
+            item = self._mgr_edit_items[item_idx]
+            item['Producto'] = _clean(row.get('Nombre_del_Producto', ''))
+            item['Codigo'] = _clean(row.get('Codigo', ''))
+            item['Lote'] = _clean(row.get('Lote', ''))
+            item['Bodega'] = _clean(row.get('Bodega', ''))
+            item['Ubicacion'] = _clean(row.get('Ubicacion', ''))
+            item['Vencimiento'] = _clean(row.get('Vencimiento', ''))
+            try:
+                item['Stock'] = int(row.get('Stock', 0))
+            except Exception:
+                item['Stock'] = 0
+            try:
+                item['Stock_Original_Index'] = int(row_idx)
+            except Exception:
+                pass
+            try:
+                if int(item.get('Cantidad', 0)) > int(item.get('Stock', 0)):
+                    messagebox.showwarning(
+                        'Cambiar Producto',
+                        'La cantidad es mayor al stock del producto seleccionado.',
+                    )
+            except Exception:
+                pass
+            self._mgr_render_items()
+            dlg.destroy()
+
+        def _on_search(*_args) -> None:
+            _render(search_var.get().strip())
+
+        search_var.trace_add('write', _on_search)
+        tree.bind('<Double-1>', lambda _e: _apply_selection())
+
+        btns = ttk.Frame(dlg, padding=10)
+        btns.pack(fill='x')
+        ttk.Button(btns, text='Seleccionar', command=_apply_selection).pack(side='left')
+        ttk.Button(btns, text='Cancelar', command=dlg.destroy).pack(side='right')
+
+        _render("")
+        search_entry.focus_set()
+
+    def _mgr_save_edit(self) -> None:
+        if not self._mgr_edit_number:
+            messagebox.showwarning('Guardar', 'Seleccione una solicitud primero.')
+            return
+        if self._mgr_edit_status == 'Descontado':
+            messagebox.showwarning('Guardar', 'El vale esta Descontado y no se puede editar.')
+            return
+        if not self._mgr_edit_json_path:
+            messagebox.showwarning('Guardar', 'No se encontro el archivo JSON del vale.')
+            return
+        if not self._mgr_edit_items:
+            messagebox.showwarning('Guardar', 'El vale quedaria sin items. Agregue al menos uno.')
+            return
+
+        payload = dict(self._mgr_edit_payload or {})
+        payload['items'] = self._mgr_edit_items
+        try:
+            import json
+            with open(self._mgr_edit_json_path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            messagebox.showerror('Guardar', f'No se pudo actualizar el JSON: {e}')
+            return
+
+        pdf_path = self._mgr_edit_pdf_path
+        if not pdf_path and self._mgr_edit_json_path:
+            base = os.path.splitext(self._mgr_edit_json_path)[0]
+            pdf_path = base + '.pdf'
+        try:
+            emission_time = datetime.now()
+            raw_emission = payload.get('emission_time')
+            if isinstance(raw_emission, str) and raw_emission:
+                try:
+                    emission_time = datetime.fromisoformat(raw_emission)
+                except Exception:
+                    emission_time = datetime.now()
+            vale_data_with_users = {
+                'solicitante': payload.get('solicitante', ''),
+                'usuario_bodega': payload.get('usuario_bodega', ''),
+                'numero_correlativo': payload.get('numero_correlativo', ''),
+                'items': self._mgr_edit_items,
+            }
+            from pdf_utils import build_vale_pdf
+            build_vale_pdf(pdf_path, vale_data_with_users, emission_time)
+        except Exception as e:
+            messagebox.showerror('Guardar', f'No se pudo regenerar el PDF: {e}')
+            return
+
+        try:
+            self.registry.update_entry(int(self._mgr_edit_number), items_count=len(self._mgr_edit_items))
+        except Exception:
+            pass
+        self.refresh_manager()
+        self.refresh_history()
+        messagebox.showinfo('Guardar', 'Vale actualizado correctamente.')
 
 
     def _autosize_history_columns(self, event=None) -> None:
@@ -2064,6 +2614,47 @@ class ValeConsumoApp:
         self.log.info("Vale en curso limpiado (se restauro stock)")
         self.update_vale_treeview()
         self.filter_products()
+
+    def _schedule_preview_cleanup(self, path: str, delay_sec: int = 900) -> None:
+        def _worker() -> None:
+            time.sleep(max(1, int(delay_sec)))
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def preview_vale(self) -> None:
+        if not self.manager.current_vale:
+            messagebox.showwarning('Previsualizacion', 'No hay productos en la solicitud.')
+            return
+
+        solicitante = self.solicitante_var.get().strip()
+        usuario_bodega = self.usuario_bodega_var.get().strip()
+        if not solicitante:
+            messagebox.showwarning('Previsualizacion', 'Debe seleccionar un solicitante.')
+            return
+        if not usuario_bodega:
+            messagebox.showwarning('Previsualizacion', 'Debe seleccionar un usuario de bodega.')
+            return
+
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        preview_name = f"preview_solicitud_{ts}.pdf"
+        preview_path = os.path.join(tempfile.gettempdir(), preview_name)
+        try:
+            vale_data_with_users = {
+                'solicitante': solicitante,
+                'usuario_bodega': usuario_bodega,
+                'numero_correlativo': '',
+                'items': list(self.manager.current_vale),
+            }
+            from pdf_utils import build_vale_pdf
+            build_vale_pdf(preview_path, vale_data_with_users, datetime.now())
+            self._open_pdf_safe(preview_path)
+            self._schedule_preview_cleanup(preview_path, delay_sec=900)
+        except Exception as e:
+            messagebox.showerror('Previsualizacion', f'No se pudo generar la previsualizacion: {e}')
 
     def generate_and_print_vale(self) -> None:
         if not self.manager.current_vale:
