@@ -16,6 +16,25 @@ import settings_store as settings
 logger = logging.getLogger(__name__)
 
 
+def _resolve_printer_name(name: Optional[str]) -> Optional[str]:
+    if not name:
+        return None
+    try:
+        import win32print  # type: ignore
+
+        flags = win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
+        printers = [p[2] for p in win32print.EnumPrinters(flags)]
+        for p in printers:
+            if p == name:
+                return p
+        for p in printers:
+            if p.lower() == name.lower():
+                return p
+        return None
+    except Exception:
+        return name
+
+
 def _find_sumatra_exe() -> Optional[str]:
     """Return path to SumatraPDF.exe if present via config/env or typical paths."""
     try:
@@ -109,9 +128,12 @@ def print_pdf_windows(filename: str, copies: int = 1, preview: bool = False) -> 
 
         # Impresora configurada (opcional)
         try:
-            configured_printer = settings.get_printer_name()
+            raw_printer = settings.get_printer_name()
         except Exception:
-            configured_printer = None
+            raw_printer = None
+        configured_printer = _resolve_printer_name(raw_printer)
+        if raw_printer and not configured_printer:
+            logger.warning("Impresora configurada no encontrada: %s", raw_printer)
 
         printer_label = configured_printer or "impresora predeterminada"
 

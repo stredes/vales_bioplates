@@ -1,4 +1,21 @@
 {
-  "sequence": 0,
-  "vales": []
+  "sequence": 2,
+  "vales": [
+    {
+      "number": 1,
+      "status": "Pendiente",
+      "created_at": "2026-01-16T10:02:38",
+      "pdf": "solicitud_001_20260116_100220.pdf",
+      "json": "solicitud_001_20260116_100220.json",
+      "items_count": 8
+    },
+    {
+      "number": 2,
+      "status": "Pendiente",
+      "created_at": "2026-01-16T11:15:49",
+      "pdf": "solicitud_002_20260116_111542.pdf",
+      "json": "solicitud_002_20260116_111542.json",
+      "items_count": 5
+    }
+  ]
 }

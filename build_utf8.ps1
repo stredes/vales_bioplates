@@ -164,13 +164,13 @@ function Initialize-ToolsAndDeps {
     }
     # Verificar PyInstaller
     & $Py -c "import importlib.util as u,sys;sys.exit(0 if u.find_spec('PyInstaller') else 1)" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "PyInstaller no estÃƒÂ¡ instalado. Ejecute con -InstallMissing o instale manualmente." }
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller no esta instalado. Ejecute con -InstallMissing o instale manualmente." }
 }
 
 function New-AppPackage {
     param([string]$Py, [string]$Entry, [string]$RequirementsFile)
     Initialize-ToolsAndDeps -Py $Py -RequirementsFile $RequirementsFile
-    if (-not (Test-Path $Entry)) { throw "No se encontrÃƒÂ³ el entrypoint: $Entry" }
+    if (-not (Test-Path $Entry)) { throw "No se encontro el entrypoint: $Entry" }
 
     if (-not $Icon) {
         $defaultIcon = Join-Path $PSScriptRoot 'icon.ico'
@@ -214,7 +214,7 @@ function New-AppPackage {
     $argsList += @('--collect-all','pypdf')
     Write-Host ("Ejecutando: {0} -m PyInstaller {1}" -f $Py, ($argsList -join ' ')) -ForegroundColor Cyan
     & $Py -m PyInstaller @argsList
-    if ($LASTEXITCODE -ne 0) { throw "PyInstaller fallÃƒÂ³ con cÃƒÂ³digo $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller fallo con codigo $LASTEXITCODE" }
 
     # Post-copia a dist
     $distRoot = Join-Path $PSScriptRoot 'dist'

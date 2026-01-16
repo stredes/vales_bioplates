@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional
 
@@ -32,6 +34,14 @@ def _para(text: str, style_name: str = "Normal") -> Paragraph:
         )
         return Paragraph(text.replace("&", "&amp;"), st)
     return Paragraph(text.replace("&", "&amp;"), styles[style_name])
+
+
+def _extract_num_from_filename(filename: str) -> str:
+    base = os.path.basename(filename or "")
+    match = re.match(r"^solicitud_(\d+)_\d{8}_\d{6}\.pdf$", base.lower())
+    if match:
+        return match.group(1)
+    return ""
 
 def _format_date_ddmmyyyy(value) -> str:
     if value is None:
@@ -190,6 +200,11 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
     solicitante = vale_data_with_users.get('solicitante', '')
     usuario_bodega = vale_data_with_users.get('usuario_bodega', '')
     numero_correlativo = vale_data_with_users.get('numero_correlativo', '')
+    if numero_correlativo is None:
+        numero_correlativo = ''
+    numero_correlativo = str(numero_correlativo).strip()
+    if not numero_correlativo:
+        numero_correlativo = _extract_num_from_filename(filename)
     vale_data = vale_data_with_users.get('items', [])
 
     label_style = ParagraphStyle(
@@ -208,7 +223,7 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
     )
     meta_rows = [
         [
-            Paragraph("N° Solicitud", label_style),
+            Paragraph("No Solicitud", label_style),
             Paragraph("Fecha de Emision", label_style),
             Paragraph("Hora de Emision", label_style),
         ],
@@ -272,6 +287,7 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
         fontSize=8,
         leading=9,
         alignment=1,
+        textColor=colors.black,
     )
 
     # Convertir encabezados y celdas a Paragraph para permitir wrap
@@ -292,8 +308,8 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
     table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2f3b52")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.white),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
                 ("ALIGN", (0, 0), (-1, -1), "CENTER"),
                 ("ALIGN", (1, 0), (1, -1), "LEFT"),  # Producto
                 ("ALIGN", (2, 0), (4, -1), "LEFT"),  # Lote/Bodega/Ubicacion
@@ -308,7 +324,7 @@ def build_vale_pdf(filename: str, vale_data_with_users: Dict, emission_time: dat
                 ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                 ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f7f7f7")),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#ffffff"), colors.HexColor("#f1f3f6")]),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#c9c9c9")),
+                ("GRID", (0, 0), (-1, -1), 0.9, colors.HexColor("#8f8f8f")),
             ]
         )
     )
@@ -441,6 +457,9 @@ def build_unified_vale_pdf(filename: str, rows: List[Dict], emission_time: datet
         ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
         ("ALIGN", (0, 0), (-1, -1), "LEFT"),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#cfcfcf")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
     ]))
     elements.append(table)
     elements.append(Spacer(1, 12))
@@ -485,7 +504,9 @@ def build_vales_list_pdf(filename: str, title: str, rows: List[Dict]) -> None:
         ("FONTSIZE", (0, 0), (-1, -1), 10),
         ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
         ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#cfcfcf")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
     ]))
     elements.append(table)
     doc.build(elements)
