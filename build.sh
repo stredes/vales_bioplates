@@ -58,7 +58,7 @@ install_deps() {
     "$py" -m pip install -r "$REQUIREMENTS_FILE"
   else
     warn "No se encontro $REQUIREMENTS_FILE; instalando conjunto minimo."
-    "$py" -m pip install pandas reportlab pillow openpyxl xlrd pypdf
+    "$py" -m pip install numpy pandas reportlab pillow openpyxl xlrd pypdf
   fi
 }
 
@@ -70,9 +70,9 @@ init_tools_and_deps() {
 import importlib.util, sys
 sys.exit(0 if importlib.util.find_spec("PyInstaller") else 1)
 PY
-    "$py" - <<'PY' || "$py" -m pip install -U pandas reportlab pillow openpyxl xlrd pypdf
+    "$py" - <<'PY' || "$py" -m pip install -U numpy pandas reportlab pillow openpyxl xlrd pypdf
 import importlib.util as u, sys
-mods = ["pandas","reportlab","PIL","openpyxl","xlrd","pypdf","PyPDF2"]
+mods = ["numpy","pandas","reportlab","PIL","openpyxl","xlrd","pypdf","PyPDF2"]
 missing = [m for m in mods if u.find_spec(m) is None]
 sys.exit(0 if not missing else 1)
 PY
@@ -117,9 +117,9 @@ new_app_package() {
     args+=("--icon" "$ICON")
   fi
 
-  args+=("--hidden-import=reportlab" "--hidden-import=PIL" "--hidden-import=openpyxl")
+  args+=("--hidden-import=reportlab" "--hidden-import=numpy" "--hidden-import=PIL" "--hidden-import=openpyxl")
   args+=("--hidden-import=xlrd" "--hidden-import=pypdf" "--hidden-import=PyPDF2")
-  args+=("--collect-all" "reportlab" "--collect-all" "PIL" "--collect-all" "openpyxl")
+  args+=("--collect-all" "numpy" "--collect-all" "reportlab" "--collect-all" "PIL" "--collect-all" "openpyxl")
   args+=("--collect-all" "pypdf")
 
   info "Ejecutando: $py -m PyInstaller ${args[*]}"

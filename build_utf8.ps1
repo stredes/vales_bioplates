@@ -122,6 +122,7 @@ function Install-Dependencies {
     } else {
         Write-Warning "No se encontro $RequirementsFile; instalando conjunto minimo."
         $pkgs = @(
+            'numpy',
             'pandas',
             'reportlab',
             'pillow',     # PIL para reportlab/imagenes
@@ -154,9 +155,9 @@ function Initialize-ToolsAndDeps {
         & $Py -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('PyInstaller') else 1)" | Out-Null
         if ($LASTEXITCODE -ne 0) { & $Py -m pip install -U pyinstaller pyinstaller-hooks-contrib }
         # Dependencias runtime
-        & $Py -c "import importlib.util as u,sys;mods=['pandas','reportlab','PIL','openpyxl','xlrd','win32api','win32print','pypdf','PyPDF2'];missing=[m for m in mods if u.find_spec(m) is None];sys.exit(0 if not missing else 1)" | Out-Null
+        & $Py -c "import importlib.util as u,sys;mods=['numpy','pandas','reportlab','PIL','openpyxl','xlrd','win32api','win32print','pypdf','PyPDF2'];missing=[m for m in mods if u.find_spec(m) is None];sys.exit(0 if not missing else 1)" | Out-Null
         if ($LASTEXITCODE -ne 0) {
-            & $Py -m pip install -U pandas reportlab pillow openpyxl xlrd pypdf
+            & $Py -m pip install -U numpy pandas reportlab pillow openpyxl xlrd pypdf
             if ($env:OS -eq 'Windows_NT') {
                 try { & $Py -m pip install -U pywin32 } catch { Write-Warning 'pywin32 opcional; continuando.' }
             }
@@ -201,6 +202,7 @@ function New-AppPackage {
     
 # Hidden-imports necesarios
     $argsList += @('--hidden-import=reportlab')
+    $argsList += @('--hidden-import=numpy')
     $argsList += @('--hidden-import=PIL')
     $argsList += @('--hidden-import=openpyxl')
     $argsList += @('--hidden-import=xlrd')
@@ -208,6 +210,7 @@ function New-AppPackage {
     $argsList += @('--hidden-import=win32print')
     $argsList += @('--hidden-import=pypdf')
     $argsList += @('--hidden-import=PyPDF2')
+    $argsList += @('--collect-all','numpy')
     $argsList += @('--collect-all','reportlab')
     $argsList += @('--collect-all','PIL')
     $argsList += @('--collect-all','openpyxl')

@@ -27,6 +27,7 @@ from typing import Optional, Callable
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
+import numpy as np
 import pandas as pd
 
 from config import AREA_FILTER, HISTORY_DIR, INVENTORY_FILE, WINDOWS_OS
@@ -87,9 +88,20 @@ class ValeConsumoApp:
         self._load_progress_label = None
         self._loading_inventory = False
         self._filter_after_id = None
+        self._filter_queue = queue.Queue()
+        self._filter_poll_after_id = None
+        self._filter_worker_token = 0
+        self._filter_worker_running = False
+        self._filter_async_threshold = 4000
+        self._render_after_id = None
+        self._render_token = 0
+        self._render_batch_size = 400
         self._hist_after_id = None
         self._mgr_after_id = None
         self._ubic_after_id = None
+        self._inventory_rev = 0
+        self._last_filter_signature = None
+        self._max_sort_rows = 5000
         self.manager = ValeManager()
         # Carpeta de historial desde ajustes (fallback a config)
         try:
@@ -172,6 +184,7 @@ class ValeConsumoApp:
         try:
             self.topbar.columnconfigure(2, weight=0)
             ttk.Button(self.topbar, text="Instrucciones", command=self._open_instructions).grid(row=0, column=2, sticky='e')
+            ttk.Button(self.topbar, text="Refresh", command=self._refresh_ui).grid(row=0, column=3, sticky='e', padx=(6, 0))
         except Exception:
             pass
 
@@ -203,6 +216,7 @@ class ValeConsumoApp:
             pass
 
         self._restore_last_inventory()
+        self.master.after(200, self._activate_search_entry)
 
     def _build_menu(self) -> None:
         menubar = tk.Menu(self.master)
@@ -676,6 +690,21 @@ class ValeConsumoApp:
             txt.insert('1.0', 'No se pudieron cargar las instrucciones.')
         txt.configure(state='disabled')
 
+    def _refresh_ui(self) -> None:
+        try:
+            self._refresh_solicitantes_combo()
+            self._refresh_usuarios_combo()
+            self._refresh_ubicaciones_checklist()
+        except Exception:
+            pass
+        try:
+            self.refresh_history()
+            self.refresh_manager()
+        except Exception:
+            pass
+        self.filter_products(immediate=True)
+        self.update_vale_treeview()
+
     def _open_shortcuts(self) -> None:
         info = (
             "Atajos de teclado:\n\n"
@@ -740,6 +769,8 @@ class ValeConsumoApp:
         # Configurar tags de color para vencimiento
         self.product_tree.tag_configure('vencido', background='#ffb3b3', foreground='#b00000')  # Rojo: vencido
         self.product_tree.tag_configure('vencimiento_proximo', background='#cfe5ff', foreground='#004a99')  # Azul: proximo a vencer
+        self.product_tree.tag_configure('evenrow', background='#ffffff')
+        self.product_tree.tag_configure('oddrow', background='#f7f7f7')
 
     def _init_filter_panel(self, frame: ttk.Frame) -> None:
         # Panel de control con scroll
@@ -797,10 +828,12 @@ class ValeConsumoApp:
 
     def _build_filter_controls(self) -> None:
         # Buscar
-        ttk.Label(self.control_frame, text="Buscar producto:", font=('Segoe UI', 10)).grid(row=0, column=0, sticky='w', pady=(0, 4))
+        ttk.Label(self.control_frame, text="Buscar producto o codigo:", font=('Segoe UI', 10)).grid(row=0, column=0, sticky='w', pady=(0, 4))
         self.search_var = tk.StringVar()
         self.search_entry = ttk.Entry(self.control_frame, textvariable=self.search_var, width=26, font=('Segoe UI', 10))  # Agregada fuente
         self.search_entry.grid(row=1, column=0, sticky='ew', pady=(0, 8))
+        self.search_entry.bind('<Enter>', lambda _e: self._activate_search_entry())
+        self.search_entry.bind('<Button-1>', lambda _e: self._activate_search_entry())
         self.search_var.trace_add('write', lambda *_: self.filter_products())
 
         # Cantidad y acciones
@@ -815,9 +848,10 @@ class ValeConsumoApp:
         # Subfamilia
         ttk.Label(self.control_frame, text="Subfamilia:", style='Small.TLabel').grid(row=7, column=0, sticky='w', pady=(4,0))
         self.subfam_var = tk.StringVar(value='(Todas)')
-        self.subfam_combo = ttk.Combobox(self.control_frame, textvariable=self.subfam_var, state='readonly', width=24, font=('Segoe UI', 10))  # Agregada fuente
+        self.subfam_combo = ttk.Combobox(self.control_frame, textvariable=self.subfam_var, state='normal', width=24, font=('Segoe UI', 10))  # Agregada fuente
         self.subfam_combo.grid(row=8, column=0, sticky='ew', pady=(0, 8))
         self.subfam_combo.bind('<<ComboboxSelected>>', lambda *_: self.filter_products())
+        self.subfam_var.trace_add('write', lambda *_: self.filter_products())
 
         # Lote / Ubicacion
         ttk.Label(self.control_frame, text="Lote:", style='Small.TLabel').grid(row=9, column=0, sticky='w')
@@ -836,7 +870,7 @@ class ValeConsumoApp:
         self.vhasta_var = tk.StringVar()
         ttk.Entry(self.control_frame, textvariable=self.vhasta_var, width=26, font=('Segoe UI', 10)).grid(row=16, column=0, sticky='ew', pady=(0, 8))
 
-        self.stock_only_var = tk.BooleanVar(value=False)
+        self.stock_only_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(self.control_frame, text='Solo con stock', variable=self.stock_only_var, command=self.filter_products).grid(row=17, column=0, sticky='w', pady=(6, 8))
 
         # Excluir ubicaciones (checklist desplegable)
@@ -970,15 +1004,16 @@ class ValeConsumoApp:
         except Exception:
             pass
 
-    def _refresh_ubicaciones_checklist(self) -> None:
+    def _refresh_ubicaciones_checklist(self, ubicaciones: Optional[list[str]] = None) -> None:
         try:
-            df = self.manager.bioplates_inventory
-            if df is None or df.empty or 'Ubicacion' not in df.columns:
-                ubicaciones = []
-            else:
-                ubicaciones = sorted(
-                    {str(x).strip() for x in df['Ubicacion'].dropna().astype(str) if str(x).strip()}
-                )
+            if ubicaciones is None:
+                df = self.manager.bioplates_inventory
+                if df is None or df.empty or 'Ubicacion' not in df.columns:
+                    ubicaciones = []
+                else:
+                    ubicaciones = sorted(
+                        {str(x).strip() for x in df['Ubicacion'].dropna().astype(str) if str(x).strip()}
+                    )
         except Exception:
             ubicaciones = []
         existing = self.ubicacion_exclude_vars or {}
@@ -1093,7 +1128,7 @@ class ValeConsumoApp:
         self.ubi_var.set("")
         self.vdesde_var.set("")
         self.vhasta_var.set("")
-        self.stock_only_var.set(False)
+        self.stock_only_var.set(True)
         try:
             if self.ubicacion_exclude_search_var is not None:
                 self.ubicacion_exclude_search_var.set("")
@@ -1640,7 +1675,21 @@ class ValeConsumoApp:
         def _worker() -> None:
             try:
                 df = self.manager.load(path, AREA_FILTER, progress_cb=_progress)
-                self._load_queue.put(("done", df))
+                try:
+                    self._prepare_inventory_cache(df)
+                    subfamilies = sorted([x for x in pd.Series(df.get('Subfamilia', [])).dropna().astype(str).unique() if x])
+                except Exception:
+                    subfamilies = []
+                try:
+                    if 'Ubicacion' in df.columns:
+                        ubicaciones = sorted(
+                            {str(x).strip() for x in df['Ubicacion'].dropna().astype(str) if str(x).strip()}
+                        )
+                    else:
+                        ubicaciones = []
+                except Exception:
+                    ubicaciones = []
+                self._load_queue.put(("done", df, subfamilies, ubicaciones))
             except Exception as e:
                 self._load_queue.put(("error", e))
 
@@ -1676,6 +1725,10 @@ class ValeConsumoApp:
             pass
         try:
             if self._load_progress and self._load_progress.winfo_exists():
+                try:
+                    self._load_progress.grab_release()
+                except Exception:
+                    pass
                 self._load_progress.destroy()
         except Exception:
             pass
@@ -1710,10 +1763,14 @@ class ValeConsumoApp:
                     self._update_load_progress(processed, total, message)
                 elif kind == "done":
                     df = payload[0]
+                    subfamilies = payload[1] if len(payload) > 1 else None
+                    ubicaciones = payload[2] if len(payload) > 2 else None
                     self._loading_inventory = False
                     self._close_load_progress()
                     self.file_label.configure(text=os.path.basename(path))
-                    self._populate_subfamilies(df)
+                    self._inventory_rev += 1
+                    self._last_filter_signature = None
+                    self._populate_subfamilies(df, subfamilies=subfamilies, ubicaciones=ubicaciones)
                 elif kind == "error":
                     err = payload[0]
                     self._loading_inventory = False
@@ -1729,6 +1786,8 @@ class ValeConsumoApp:
         try:
             if '_lc_producto' not in df.columns and 'Nombre_del_Producto' in df.columns:
                 df['_lc_producto'] = df['Nombre_del_Producto'].fillna('').astype(str).str.lower()
+            if '_lc_codigo' not in df.columns and 'Codigo' in df.columns:
+                df['_lc_codigo'] = df['Codigo'].fillna('').astype(str).str.lower()
             if '_lc_lote' not in df.columns and 'Lote' in df.columns:
                 df['_lc_lote'] = df['Lote'].fillna('').astype(str).str.lower()
             if '_lc_ubicacion' not in df.columns and 'Ubicacion' in df.columns:
@@ -1740,17 +1799,23 @@ class ValeConsumoApp:
         except Exception:
             pass
 
-    def _populate_subfamilies(self, df: pd.DataFrame) -> None:
+    def _populate_subfamilies(
+        self,
+        df: pd.DataFrame,
+        subfamilies: Optional[list[str]] = None,
+        ubicaciones: Optional[list[str]] = None,
+    ) -> None:
         self._prepare_inventory_cache(df)
         try:
-            uniq = sorted([x for x in pd.Series(df.get('Subfamilia', [])).dropna().astype(str).unique() if x])
-            self.subfam_combo['values'] = ['(Todas)'] + uniq
+            if subfamilies is None:
+                subfamilies = sorted([x for x in pd.Series(df.get('Subfamilia', [])).dropna().astype(str).unique() if x])
+            self.subfam_combo['values'] = ['(Todas)'] + list(subfamilies)
         except Exception:
             self.subfam_combo['values'] = ['(Todas)']
         self.subfam_combo.set('(Todas)')
 
-        self._refresh_ubicaciones_checklist()
-        self.filter_products(immediate=True)
+        self._refresh_ubicaciones_checklist(ubicaciones)
+        self.master.after(0, lambda: self.filter_products(immediate=True))
 
     def filter_products(self, immediate: bool = False) -> None:
         if immediate:
@@ -1779,32 +1844,117 @@ class ValeConsumoApp:
         if '_lc_producto' not in df.columns:
             self._prepare_inventory_cache(df)
         search_term = self.search_var.get().strip()
+        lote_term = self.lote_var.get().strip()
+        ubi_term = self.ubi_var.get().strip()
+        vdesde = self.vdesde_var.get().strip()
+        vhasta = self.vhasta_var.get().strip()
+        subfam = self.subfam_var.get().strip() or '(Todas)'
+        stock_only = bool(self.stock_only_var.get())
+        excluded = self._get_excluded_ubicaciones()
+        excluded_sig = tuple(sorted(str(x).strip().lower() for x in excluded if str(x).strip()))
+        signature = (
+            self._inventory_rev,
+            search_term.lower(),
+            lote_term.lower(),
+            ubi_term.lower(),
+            vdesde,
+            vhasta,
+            subfam,
+            stock_only,
+            excluded_sig,
+        )
+        if signature == self._last_filter_signature:
+            return
+        self._last_filter_signature = signature
         opts = FilterOptions(
             producto=search_term,
-            lote=self.lote_var.get().strip(),
-            ubicacion=self.ubi_var.get().strip(),
-            venc_desde=self.vdesde_var.get().strip(),
-            venc_hasta=self.vhasta_var.get().strip(),
-            subfamilia=self.subfam_var.get().strip() or '(Todas)',
-            solo_con_stock=bool(self.stock_only_var.get()),
+            lote=lote_term,
+            ubicacion=ubi_term,
+            venc_desde=vdesde,
+            venc_hasta=vhasta,
+            subfamilia=subfam,
+            solo_con_stock=stock_only,
         )
+        if len(df) >= self._filter_async_threshold:
+            self._start_filter_worker(df, opts, excluded, search_term, signature)
+            return
         try:
             out = opts.apply(df)
         except Exception as exc:
             self.log.error("Filtro fallo, se muestra inventario completo: %s", exc)
             out = df
-        excluded = self._get_excluded_ubicaciones()
         if excluded and 'Ubicacion' in out.columns:
             excluded_set = {str(x).strip().lower() for x in excluded}
             if '_lc_ubicacion' in out.columns:
                 out = out[~out['_lc_ubicacion'].isin(excluded_set)]
             else:
                 out = out[~out['Ubicacion'].fillna('').astype(str).str.strip().str.lower().isin(excluded_set)]
-        if search_term:
+        if search_term and len(out) <= self._max_sort_rows:
             out = self._sort_by_proximidad(out)
         self.filtered_df = out
         self._populate_products(out)
         self.log.info("Filtro aplicado -> %d filas visibles", len(out))
+
+    def _start_filter_worker(
+        self,
+        df: pd.DataFrame,
+        opts: FilterOptions,
+        excluded: list,
+        search_term: str,
+        signature: tuple,
+    ) -> None:
+        self._filter_worker_token += 1
+        token = self._filter_worker_token
+        self._filter_worker_running = True
+
+        def _worker() -> None:
+            try:
+                out = opts.apply(df)
+                if excluded and 'Ubicacion' in out.columns:
+                    excluded_set = {str(x).strip().lower() for x in excluded}
+                    if '_lc_ubicacion' in out.columns:
+                        out = out[~out['_lc_ubicacion'].isin(excluded_set)]
+                    else:
+                        out = out[~out['Ubicacion'].fillna('').astype(str).str.strip().str.lower().isin(excluded_set)]
+                if search_term and len(out) <= self._max_sort_rows:
+                    out = self._sort_by_proximidad(out)
+                self._filter_queue.put(("done", token, signature, out))
+            except Exception as exc:
+                self._filter_queue.put(("error", token, signature, exc))
+
+        threading.Thread(target=_worker, daemon=True).start()
+        self._schedule_filter_poll()
+
+    def _schedule_filter_poll(self) -> None:
+        if self._filter_poll_after_id:
+            return
+        self._filter_poll_after_id = self.master.after(60, self._poll_filter_queue)
+
+    def _poll_filter_queue(self) -> None:
+        self._filter_poll_after_id = None
+        try:
+            while True:
+                kind, *payload = self._filter_queue.get_nowait()
+                if kind == "done":
+                    token, signature, out = payload
+                    if token == self._filter_worker_token:
+                        self._filter_worker_running = False
+                    if signature != self._last_filter_signature or token != self._filter_worker_token:
+                        continue
+                    self.filtered_df = out
+                    self._populate_products(out)
+                    self.log.info("Filtro aplicado -> %d filas visibles", len(out))
+                elif kind == "error":
+                    token, signature, exc = payload
+                    if token == self._filter_worker_token:
+                        self._filter_worker_running = False
+                    if signature != self._last_filter_signature or token != self._filter_worker_token:
+                        continue
+                    self.log.error("Filtro async fallo: %s", exc)
+        except queue.Empty:
+            pass
+        if self._filter_worker_running:
+            self._filter_poll_after_id = self.master.after(60, self._poll_filter_queue)
 
     def _parse_vencimiento_value(self, value):
         if value is None:
@@ -1844,14 +1994,22 @@ class ValeConsumoApp:
         today = pd.Timestamp(datetime.now().date())
         days = (venc_dt - today).dt.days
         days = days.where(is_earliest, 999999)
-        out = df.copy()
-        out['_is_earliest'] = is_earliest.astype(int)
-        out['_days'] = days
-        out['_orig'] = range(len(out))
-        out = out.sort_values(by=['_is_earliest', '_days', '_orig'], ascending=[False, True, True], kind='mergesort')
-        return out.drop(columns=['_is_earliest', '_days', '_orig'])
+        is_earliest_vals = is_earliest.astype(int).to_numpy()
+        days_vals = days.to_numpy()
+        orig = np.arange(len(df))
+        order = np.lexsort((orig, days_vals, -is_earliest_vals))
+        return df.iloc[order]
 
     def _populate_products(self, df: pd.DataFrame) -> None:
+        if self._render_after_id:
+            try:
+                self.master.after_cancel(self._render_after_id)
+            except Exception:
+                pass
+            self._render_after_id = None
+        self._render_token += 1
+        render_token = self._render_token
+
         children = self.product_tree.get_children()
         if children:
             self.product_tree.delete(*children)
@@ -1874,24 +2032,41 @@ class ValeConsumoApp:
 
         cols = ['Nombre_del_Producto', 'Codigo', 'Lote', 'Bodega', 'Ubicacion', 'Vencimiento', 'Stock']
         values_df = df[cols]
-        is_earliest_vals = is_earliest.values
-        days_vals = days.values
-        for pos, row in enumerate(values_df.itertuples(index=True, name=None)):
-            idx = row[0]
-            values = row[1:]
-            tag = None
-            if pos < len(is_earliest_vals) and is_earliest_vals[pos]:
+        values_arr = values_df.to_numpy(copy=False)
+        idx_arr = values_df.index.to_numpy()
+        is_earliest_vals = is_earliest.to_numpy()
+        days_vals = days.to_numpy()
+        total = len(values_arr)
+        batch = max(50, int(self._render_batch_size))
+
+        def _insert_batch(start: int = 0) -> None:
+            if render_token != self._render_token:
+                return
+            end = min(start + batch, total)
+            for pos in range(start, end):
+                idx = idx_arr[pos]
+                values = tuple(values_arr[pos].tolist())
+                tag = None
+                if pos < len(is_earliest_vals) and is_earliest_vals[pos]:
+                    try:
+                        tag = 'vencido' if days_vals[pos] < 0 else 'vencimiento_proximo'
+                    except Exception:
+                        tag = None
                 try:
-                    tag = 'vencido' if days_vals[pos] < 0 else 'vencimiento_proximo'
+                    iid = str(int(idx))
                 except Exception:
-                    tag = None
-            try:
-                iid = str(int(idx))
-            except Exception:
-                iid = str(idx)
-            self.product_tree.insert('', 'end', iid=iid, values=values, tags=(tag,) if tag else ())
-        
-        self._apply_stripes(self.product_tree)
+                    iid = str(idx)
+                if tag:
+                    tags = (tag,)
+                else:
+                    tags = ('evenrow' if pos % 2 == 0 else 'oddrow',)
+                self.product_tree.insert('', 'end', iid=iid, values=values, tags=tags)
+            if end < total:
+                self._render_after_id = self.master.after(1, lambda: _insert_batch(end))
+            else:
+                self._render_after_id = None
+
+        _insert_batch(0)
 
     def add_to_vale(self) -> None:
         sel = self.product_tree.focus()
@@ -1908,6 +2083,7 @@ class ValeConsumoApp:
         try:
             item_index = int(sel)
             self.manager.add_to_vale(item_index, qty)
+            self._inventory_rev += 1
             self.log.info("Agregado item al vale (idx=%s qty=%s)", item_index, qty)
         except Exception as e:
             messagebox.showerror('Agregar a Solicitud', str(e))
@@ -1940,6 +2116,13 @@ class ValeConsumoApp:
                 else:
                     # Aplicar zebra stripe
                     tree.item(iid, tags=('evenrow' if n % 2 == 0 else 'oddrow',))
+        except Exception:
+            pass
+
+    def _activate_search_entry(self) -> None:
+        try:
+            self.search_entry.focus_set()
+            self.search_entry.icursor(tk.END)
         except Exception:
             pass
 
@@ -2336,11 +2519,11 @@ class ValeConsumoApp:
                 return df
             term_l = term.lower()
             mask = (
-                df["Nombre_del_Producto"].astype(str).str.lower().str.contains(term_l, na=False)
-                | df["Codigo"].astype(str).str.lower().str.contains(term_l, na=False)
-                | df["Lote"].astype(str).str.lower().str.contains(term_l, na=False)
-                | df["Bodega"].astype(str).str.lower().str.contains(term_l, na=False)
-                | df["Ubicacion"].astype(str).str.lower().str.contains(term_l, na=False)
+                df["Nombre_del_Producto"].astype(str).str.lower().str.contains(term_l, na=False, regex=False)
+                | df["Codigo"].astype(str).str.lower().str.contains(term_l, na=False, regex=False)
+                | df["Lote"].astype(str).str.lower().str.contains(term_l, na=False, regex=False)
+                | df["Bodega"].astype(str).str.lower().str.contains(term_l, na=False, regex=False)
+                | df["Ubicacion"].astype(str).str.lower().str.contains(term_l, na=False, regex=False)
             )
             return df[mask]
 
@@ -2573,6 +2756,7 @@ class ValeConsumoApp:
         try:
             idx = int(sel.split('-')[1])
             self.manager.remove_from_vale(idx)
+            self._inventory_rev += 1
             self.log.info("Item removido del vale idx=%s", idx)
         except Exception as e:
             self.log.warning("No se pudo remover item: %s", e)
@@ -2603,6 +2787,7 @@ class ValeConsumoApp:
             return
         try:
             self.manager.update_vale_quantity(idx, int(new_qty))
+            self._inventory_rev += 1
         except Exception as e:
             messagebox.showerror('Editar', str(e))
             return
@@ -2611,6 +2796,7 @@ class ValeConsumoApp:
 
     def clear_vale(self) -> None:
         self.manager.clear_vale()
+        self._inventory_rev += 1
         self.log.info("Vale en curso limpiado (se restauro stock)")
         self.update_vale_treeview()
         self.filter_products()
